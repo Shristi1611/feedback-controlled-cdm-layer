@@ -50,6 +50,30 @@ The plan it produces has three fields so far: `apply` (compress at all?), `rate`
 | FCCL, no learning | 41.9% | 18.0% | 18.4% |
 | FCCL, neither | 35.0% | 15.4% | 15.8% |
 
+### Stress test: what if the context rule is wrong?
+
+`ctx_strength` is how much FCCL trusts the keyword rule (0 = ignore it, 1 = trust it fully). Three simulated worlds: the pattern holds for 60% of users, there is no pattern, and the pattern is backwards for 60%. 5 seeds.
+
+| world | strength | tokens saved | bad reactions, first 10 turns | bad reactions, last 20 turns |
+|---|---|---|---|---|
+| pattern holds | 0.0 | 30.8% | 11.3% | 3.9% |
+| | 0.25 | 33.2% | 10.6% | 3.7% |
+| | 0.5 | 34.7% | 10.4% | 3.4% |
+| | 1.0 | 36.7% | 12.2% | 3.2% |
+| no pattern | 0.0 | 31.1% | 12.0% | 3.5% |
+| | 0.25 | 32.2% | 13.0% | 3.8% |
+| | 0.5 | 32.8% | 14.9% | 3.7% |
+| | 1.0 | 33.3% | 18.6% | 3.8% |
+| pattern backwards | 0.0 | 30.2% | 13.2% | 3.6% |
+| | 0.25 | 30.0% | 15.1% | 4.1% |
+| | 0.5 | 29.8% | 19.3% | 4.0% |
+| | 1.0 | 29.1% | 25.8% | 4.5% |
+
+- Learning corrects a wrong guess: late bad reactions stay between 3.2% and 4.5% in every world.
+- A wrong guess is paid for early: at full trust in the backwards world, first-10-turn bad reactions double (25.8% vs 13.2%).
+- The context weight is an unbalanced bet: about +6 points of savings when right, double the early bad reactions when wrong.
+- A low trust level (0.25) hedges: +2.4 points of savings when the rule holds, at most about +2 points of early bad reactions when it does not.
+
 What it shows:
 - Fixed settings trade savings for bad reactions in a straight line. FCCL breaks that trade-off.
 - **Learning protects users.** Turning it off takes late bad reactions from 3.2% to 18.4%.
@@ -91,6 +115,7 @@ python experiments.py 3     # earlier answer-length study
 - [ ] Add `where` (which parts of the context may be compressed) and `keep_original` (reversible compression) to the plan
 - [ ] Test on real preference data, then a small human study
 - [ ] Merge the answer-length policies into the layer
+- [ ] Learn how much to trust the context rule instead of using a fixed `ctx_strength`
 
 ## Changelog
 
@@ -98,3 +123,4 @@ python experiments.py 3     # earlier answer-length study
 - Careful experimenting with safety guards
 - Simulation test against fixed settings
 - Ablation: learning protects users, the context weight buys savings
+- Stress test with three worlds and a `ctx_strength` dial for trusting the context rule
