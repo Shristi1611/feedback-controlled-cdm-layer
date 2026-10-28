@@ -50,8 +50,8 @@ def extract_preserve(text: str) -> List[str]:
 
 
 class FCCL:
-    """Version 2: also learns how much to trust the context rule. Careful experimenting
-    per user, plus a shared score for each trust level."""
+    """Version 1: adds careful experimenting. The layer sometimes tries compressing a
+    little harder for users who seem happy, and learns from how they react."""
 
     CHATTY = ["ugh", "feel", "stressed", "annoyed", "venting", "rant", "tired", "sad", "angry"]
     LOGISTICS = ["schedule", "deadline", "invoice", "meeting", "book", "ticket", "address", "order", "deliver"]
@@ -60,7 +60,10 @@ class FCCL:
 
     def __init__(self, min_tokens=500, explore_prob=0.1, explore_step=0.1,
                  floor=0.3, warmup=3, seed=0, use_context=True, learn=True, ctx_strength=1.0,
-                 adaptive_trust=False, trust_arms=(0.0, 0.25, 0.5, 1.0), trust_eps=0.15, trust_penalty=1.0):
+                 adaptive_trust=False, trust_arms=(0.0, 0.25, 0.5, 1.0), trust_eps=0.15, trust_penalty=1.0,
+                 context_fn=None):
+        self.context_fn = context_fn       # optional: a function text -> context weight (0 to 1),
+                                           # e.g. LayaContext(). None = use the keyword rule.
         self.ctx_strength = ctx_strength   # 0 = ignore conversation type, 1 = trust the keyword rule fully
         self.adaptive_trust = adaptive_trust   # True = learn how much to trust the context rule
         self.trust_arms = list(trust_arms)     # trust levels to choose between
@@ -84,7 +87,9 @@ class FCCL:
     def context_weight(self, text: str) -> float:
         """How compressible this kind of conversation is, 0 to 1.
         Chatty or venting -> low (keep more). Logistics -> high (compress more).
-        Placeholder keyword rules; a classifier replaces this later."""
+        Uses context_fn (e.g. Laya) if one was given; otherwise placeholder keyword rules."""
+        if self.context_fn is not None:
+            return self.context_fn(text)
         t = text.lower()
         chatty = sum(k in t for k in self.CHATTY)
         logistics = sum(k in t for k in self.LOGISTICS)
