@@ -50,8 +50,8 @@ def extract_preserve(text: str) -> List[str]:
 
 
 class FCCL:
-    """Version 1: adds careful experimenting. The layer sometimes tries compressing a
-    little harder for users who seem happy, and learns from how they react."""
+    """Version 2: also learns how much to trust the context rule. Careful experimenting
+    per user, plus a shared score for each trust level."""
 
     CHATTY = ["ugh", "feel", "stressed", "annoyed", "venting", "rant", "tired", "sad", "angry"]
     LOGISTICS = ["schedule", "deadline", "invoice", "meeting", "book", "ticket", "address", "order", "deliver"]
@@ -59,8 +59,16 @@ class FCCL:
     NEGATIVE = {"show_more", "correction", "regenerate", "thumbs_down"}
 
     def __init__(self, min_tokens=500, explore_prob=0.1, explore_step=0.1,
-                 floor=0.3, warmup=3, seed=0, use_context=True, learn=True, ctx_strength=1.0):
+                 floor=0.3, warmup=3, seed=0, use_context=True, learn=True, ctx_strength=1.0,
+                 adaptive_trust=False, trust_arms=(0.0, 0.25, 0.5, 1.0), trust_eps=0.15, trust_penalty=1.0):
         self.ctx_strength = ctx_strength   # 0 = ignore conversation type, 1 = trust the keyword rule fully
+        self.adaptive_trust = adaptive_trust   # True = learn how much to trust the context rule
+        self.trust_arms = list(trust_arms)     # trust levels to choose between
+        self.trust_eps = trust_eps             # how often to try a random trust level
+        self.trust_penalty = trust_penalty     # a bad reaction costs this much, in 'fraction saved' units
+        self.arm_n = {a: 0 for a in self.trust_arms}
+        self.arm_sum = {a: 0.0 for a in self.trust_arms}
+        self.last_arm = {}                     # user_id -> trust level used for their last plan
         self.use_context = use_context     # False = ignore the conversation type (for testing)
         self.learn = learn                 # False = ignore feedback and never experiment (for testing)
         self.min_tokens = min_tokens
@@ -86,6 +94,15 @@ class FCCL:
             return 0.8
         return 0.5
 
+    def _pick_trust(self) -> float:
+        """Mostly use the trust level with the best results so far; sometimes try another.
+        Ties go to the lower (safer) trust level."""
+        if self.rng.random() < self.trust_eps:
+            return self.rng.choice(self.trust_arms)
+        def mean(a):
+            return self.arm_sum[a] / self.arm_n[a] if self.arm_n[a] else 0.0
+        return max(self.trust_arms, key=lambda a: (mean(a), -a))
+
     def plan(self, req: Request) -> CompressionPlan:
         if req.context_tokens < self.min_tokens:       # too small to be worth compressing
             p = CompressionPlan(apply=False, rate=1.0)
@@ -93,9 +110,13 @@ class FCCL:
             return p
         n = self.count.get(req.user_id, 0)
         self.count[req.user_id] = n + 1
+        strength = self.ctx_strength
+        if self.adaptive_trust:
+            strength = self._pick_trust()
+            self.last_arm[req.user_id] = strength
         c = 0.5
         if self.use_context:               # shrink the context guess toward neutral (0.5)
-            c = 0.5 + self.ctx_strength * (self.context_weight(req.text) - 0.5)
+            c = 0.5 + strength * (self.context_weight(req.text) - 0.5)
         w = self.sat_weight.get(req.user_id, 1.0)
         keep = min(1.0, max(0.1, 1.0 - 0.7 * c * w))
         explored = False
@@ -114,6 +135,11 @@ class FCCL:
             return
         w = self.sat_weight.get(fb.user_id, 1.0)
         last = self.last.get(fb.user_id)
+        if self.adaptive_trust and last is not None and last.apply and fb.user_id in self.last_arm:
+            arm = self.last_arm[fb.user_id]
+            bad = 1.0 if fb.kind in self.NEGATIVE else 0.0
+            self.arm_n[arm] += 1
+            self.arm_sum[arm] += (1.0 - last.rate) - self.trust_penalty * bad   # reward: saved text minus penalty
         tried = last is not None and last.explored
         if fb.kind in self.NEGATIVE:
             w *= 0.7 if tried else 0.85     # we caused it by experimenting: back off harder
