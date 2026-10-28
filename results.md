@@ -126,10 +126,23 @@ Add new entries at the bottom of "Experiments" and update the other sections as 
 - **Result:** the guard rejected the raw output because it lost `Where`, a capitalised word from the start of the user's message. Raw words kept: 28%.
 - **Takeaway:** `extract_preserve` over-protects sentence-starting words; needless fallbacks result (see "Open bugs").
 
-### E13. Blinded quality test (PENDING)
-- **Plan:** 8 shuffled samples labelled S1 to S8 (original; LLMLingua-2 and SimpleCDM at keep 0.6, 0.44, 0.3; ScaleDown at 50% removal). An LLM answers six fixed questions from each sample without knowing which is which; answers are then graded against the original using the key.
-- **Status:** `make_blind_samples.py` has run; waiting for the answers and the key.
-- **Weakness:** the answerer is also the judge, and the sample is small.
+### E13. Blinded quality test
+- **Question:** if an LLM answers questions from the compressed text, how much is lost?
+- **Setup:** one 362-word context; 8 shuffled samples (S1 to S8, backend names hidden); I (an LLM) answered six fixed questions from each without knowing which was which, then graded against the original (0 to 1 per question, partial credit). Questions: invoice number; delivery address and date; what is in the package and why it matters; what the user already tried with support; the four requests (where the parcel is, new delivery date, refund of the shipping fee, address change); the landlord, rent and sister situation. The guard was bypassed to see raw output.
+- **Result (score out of 6; words kept in brackets):**
+
+| compression | LLMLingua-2 | SimpleCDM | ScaleDown |
+|---|---|---|---|
+| original (362 words) | 6.0 | | |
+| keep 0.6 | 6.0 (209) | 6.0 (217) | |
+| keep 0.44 | 5.75 (153) | 5.4 (159) | |
+| keep 0.3 | 5.1 (103, guard rejected: lost "Where") | 4.6 (109) | |
+| removal 0.5 | | | 4.5 (297) |
+
+- **Takeaways:** about 40% fewer words with no detected loss at keep 0.6 for both local methods; details (the personal story, "called twice", "can't afford") are lost first as the rate drops; LLMLingua-2 edged SimpleCDM at each rate but the margin (0.35 to 0.5) is within noise; ScaleDown kept the most words (82%) yet scored lowest, losing whole paragraphs (the landlord story, the phone calls) and repeating others, though it kept all four requests. The guard rejected the best 0.3 sample for dropping one capitalised word ("Where"), confirming the over-protection bug.
+- **Hypothesis (untested):** the content lost first is the personal story, which is what a venting user would need kept; this supports giving venting contexts gentler compression.
+- **Caveats:** one text; the answerer and judge are the same model and had the ground truth when grading; the questions reward keeping keywords, which favours word-dropping methods; tests facts, not reasoning; differences under about 0.5 are noise.
+- **Files:** `make_blind_samples.py` (outputs `blind_samples.txt` and `blind_key.txt`, not committed).
 
 ---
 
@@ -143,22 +156,23 @@ Add new entries at the bottom of "Experiments" and update the other sections as 
 - LLMLingua-2 was dropped once (out of memory) and retried after a restart; it needs `device_map="cpu"` with a CPU-only PyTorch.
 
 ## Open bugs and weaknesses
-- `extract_preserve` protects capitalised sentence-starting words (for example "Where", "Ugh"), causing needless fallbacks (E12).
+- `extract_preserve` protects capitalised sentence-starting words (for example "Where", "Ugh"), causing needless fallbacks (E12, E13).
 - The guard checks IDs and words, not meaning; a compressed text can keep every protected word and still lose what the user needs.
 - The simulations assume the requested rate is honoured exactly; ScaleDown does not do this.
 - One shared trust level for all users in adaptive trust.
 - Laya's confidence is uncalibrated and unused.
+- All compressor results come from one text; they need at least a second and third text of a different kind.
 
 ## Environment notes (Windows laptop, about 6 GB RAM in use at peak)
 - Python 3.12 in a `.venv` created from Anaconda; `python` and `pip` resolve to the venv first.
 - Loading Laya or LLMLingua-2 failed with out-of-memory errors until the machine was restarted and other apps were closed. Laya needs about 1 GB free on top of `torch`.
-- Laya is cached at about 3.1 GB (all checkpoints); the English one loaded is about 0.8 GB.
+- Laya is cached at about 3.1 GB (all checkpoints); the English one loaded is about 0.8 GB. LLMLingua-2 (bert-base) is about 0.7 GB.
 - The PowerShell profile error in `powershell -command` is harmless (a blocked profile script).
 - Hugging Face warns about symlinks and an unauthenticated token; both are harmless.
 - ScaleDown API key is stored as the Windows user environment variable `SCALEDOWN_API_KEY` (never in a file in the repo).
 
 ## ScaleDown free-token log (estimates; check the dashboard)
-Billing is by input size (about 511 tokens per call on the long text). Calls so far: E5 (96), E6 (3 x 511), E7 (2 runs x 9 x 511), E8 (2 x 511 for the first demo, 1 x 511 after `min_removal` was added). Estimated total about 12,400 of the 1,000,000 free tokens.
+Billing is by input size (about 511 tokens per call on the long text). Calls so far: E5 (96), E6 (3 x 511), E7 (2 runs x 9 x 511), E8 (2 x 511 for the first demo, 1 x 511 after `min_removal` was added), E13 (1 x 511). Estimated total about 12,900 of the 1,000,000 free tokens.
 
 ## Entry template
 ```
