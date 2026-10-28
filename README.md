@@ -2,7 +2,7 @@
 
 A feedback-driven layer between users and CDMs that decides when and how hard to compress, without hurting answer quality.
 
-**Status:** early prototype. The layer's learning is tested on *simulated* users only, so those numbers show that the mechanism works, not how real people would react. The conversation-type detector (Laya) has been tried on a small set of real messages, but no real CDM is connected yet.
+**Status:** early prototype. The layer's learning is tested on *simulated* users only, so those numbers show that the mechanism works, not how real people would react. The conversation-type detector (Laya) and a real compressor (ScaleDown) have each been tried on a handful of hand-written texts. Nothing has been tested on real users.
 
 ## The idea
 
@@ -17,7 +17,9 @@ user message + history
         |
    plan: apply?, rate, preserve
         v
-      [ CDM ]  compresses the context
+   [ CDM backend ] compresses the context
+        |
+   [ guard ]  checks the result, falls back to the original if it is unsafe
         |
       [ LLM ]  answers
         |
@@ -35,11 +37,20 @@ Each decision combines two weights and a safety limit on experimenting:
 
 The plan it produces has three fields so far: `apply` (compress at all?), `rate` (fraction of the text to keep) and `preserve` (words that must survive).
 
+### The CDM side (`cdm.py`)
+
+Backends share one interface: `ScaleDownCDM` (the real API) and `SimpleCDM` (a free local word-dropper, used as a stand-in). `apply_plan()` runs a backend and then a **guard**:
+
+- protected words (from the user's message) and ID-like tokens in the context (numbers, codes such as order or part numbers) must survive, or the original text is used instead;
+- if the output is not actually shorter than the original, the original is used;
+- it reports the *measured* kept fraction, because the requested rate is only approximately honoured;
+- `ScaleDownCDM` skips the API call when the requested removal is below 50% (`min_removal`), because calibration showed it makes text longer there.
+
 ## Results so far
 
 ### Learning, on simulated users
 
-100 fake users, 40 turns each, 5 seeds. Each fake user has a hidden amount of context they need kept. "Bad reaction" means the user corrected the answer. These simulations use the keyword detector.
+100 fake users, 40 turns each, 5 seeds. Each fake user has a hidden amount of context they need kept. "Bad reaction" means the user corrected the answer. These simulations use the keyword detector, and they assume the requested rate is honoured exactly (which the ScaleDown test below shows is not true for that backend).
 
 #### First test: do the weights help?
 
@@ -109,7 +120,7 @@ Run the current comparison with `python fccl_sim.py 5`.
 
 ### Conversation-type detector: keywords vs Laya (20 hand-labelled messages)
 
-Laya is a small (421M parameter), open-source, non-autoregressive decision model from ConvAI Innovations. Given a message and a question, it picks a label. We ask it whether the user is mainly venting (`chatty`), handling practical tasks (`logistics`) or neither (`other`), and map the label to a context weight.
+Laya is a small (421M parameter), open-source, non-autoregressive decision model from ConvAI Innovations. Given a message and a question, it picks a label. We ask whether the user is mainly venting (`chatty`), handling practical tasks (`logistics`) or neither (`other`), and map the label to a context weight.
 
 | detector | correct on 20 messages |
 |---|---|
@@ -124,14 +135,47 @@ Laya is a small (421M parameter), open-source, non-autoregressive decision model
 
 Run it with `python compare_context.py`.
 
+### A real compressor: ScaleDown (one 511-token text)
+
+ScaleDown's compress API was called on one hand-written 511-token support message, at removal rates from 10% to 90% (`calibrate_scaledown.py`). ScaleDown's `rate` is the fraction *removed*; FCCL's is the fraction *kept*, so `ScaleDownCDM` converts. "Words kept" is measured on the returned text by us. ScaleDown's own token counts did not always match the text it returned.
+
+| asked to remove | tokens kept (ScaleDown's count) | words kept (ours) | protected items lost |
+|---|---|---|---|
+| 10% | 110% | 135% | none |
+| 20% | 107% | 131% | none |
+| 30% | 93% | 114% | none |
+| 40% | 78% | 97% | `X540` |
+| 50% | 67% | 82% | none |
+| 60% | 52% | 65% | `X540` |
+| 70% | 40% | 49% | `X540` |
+| 80% | 26% | 32% | `4821`, `Park Street`, `X540` |
+| 90% | 13% | 15% | `4821`, `Park Street`, `X540` |
+
+- **Below about 50% requested removal, the output was longer than the input** (it repeats overlapping chunks). Real savings started at 50%.
+- It works on whole chunks, keeping the opening and the final request, and it dropped specific details (a part number, an invoice number, a street) without warning. The documented API has no way to protect words.
+- Repeat runs gave identical numbers.
+- It is billed by input size (about 510 tokens per call on this text) against a free-token allowance on signup (1M tokens at the time of testing).
+
+End to end (`demo_pipeline.py`, Laya + FCCL + ScaleDown, same text):
+
+| case | detector | plan (keep) | outcome |
+|---|---|---|---|
+| venting message | chatty | 0.79 (remove 21%) | skipped, below ScaleDown's useful range; no call made |
+| logistics message | logistics | 0.44 (remove 56%) | compressed, then **rejected by the guard** because the part number `X540` was lost; original text used, no savings |
+| tiny context | logistics | not compressed (under 500 tokens) | unchanged |
+
+So on this text the layer behaved as designed (gentler for venting, harder for logistics, nothing for tiny contexts), but strict protection of IDs left no safe savings from ScaleDown.
+
 ## Limits
 
-- The learning results use simulated users. I wrote their hidden tolerances and reactions.
+- The learning results use simulated users. I wrote their hidden tolerances and reactions, and the simulations assume the rate is honoured exactly, which ScaleDown does not do.
 - In the first test, 60% of the fake users follow the pattern the context rule assumes, so the context weight's benefit there is probably overstated. The stress test checks what happens when it is wrong.
 - Adaptive trust uses one trust level shared by all users, while real populations are mixed. The penalty for a bad reaction (1.0) is a number I chose, not a measured one.
 - The simulations use the keyword detector. Laya is wired in as an option but has not been run end to end inside the simulation or on real conversations.
 - The detector comparison is 20 messages that I wrote and labelled.
-- No real CDM is connected yet. `rate` is our own convention (fraction kept) and still has to be mapped to the CDM's own setting. LLMLingua-2 was tried as a free local compressor but failed to load on a 6 GB machine (out of memory), so it was dropped. ScaleDown's API access and free tier are unconfirmed.
+- **The ScaleDown findings come from one text of about 510 tokens.** Longer contexts and other kinds of text may behave differently, and the 50% threshold is a measurement from that text, not a rule.
+- The guard is strict on purpose (it prefers no savings over lost details), so on some texts the real compressor yields nothing.
+- LLMLingua-2 (a free local compressor that can force-keep words) was tried once and failed to load with an out-of-memory error while the machine was low on free RAM. It has not been retried.
 - Laya needs about 1 GB of free RAM on top of `torch`. On a low-memory machine, close other apps first.
 - "No reaction" after a harder experiment is treated as weak evidence of satisfaction. That is an assumption.
 - Results are averages over 5 seeds of a simulation. Small differences between rows are not meaningful.
@@ -146,8 +190,11 @@ Run it with `python compare_context.py`.
 |---|---|
 | `fccl.py` | the layer: data types (`Request`, `CompressionPlan`, `Feedback`) and the `FCCL` class |
 | `laya_context.py` | `LayaContext`: uses Laya as the conversation-type detector (pass it as `context_fn`) |
+| `cdm.py` | CDM backends (`ScaleDownCDM`, `SimpleCDM`) and `apply_plan` with the safety guard |
 | `fccl_sim.py` | tests FCCL against simulated users in three worlds |
 | `compare_context.py` | keyword rule vs Laya on 20 hand-labelled messages |
+| `calibrate_scaledown.py` | requested vs actual savings from ScaleDown on one text |
+| `demo_pipeline.py` | Laya + FCCL + CDM end to end on three cases |
 | `sim.py`, `policies.py`, `experiments.py` | the earlier answer-length study |
 
 ## Run it
@@ -160,6 +207,17 @@ python experiments.py 3       # earlier answer-length study
 pip install laya              # needs Python 3.10+ and roughly 1 GB free RAM
 python laya_context.py        # Laya -> context weights on 3 sample messages
 python compare_context.py     # keyword rule vs Laya
+
+python cdm.py                 # the free local compressor on a sample text
+python demo_pipeline.py local # whole pipeline with the free local compressor
+```
+
+To use the real ScaleDown API, get a key from ScaleDown and keep it in an environment variable, never in a file in the repo:
+
+```
+setx SCALEDOWN_API_KEY "your-key"     # Windows; open a new terminal afterwards
+python demo_pipeline.py               # uses about 500 free tokens per compressed case
+python calibrate_scaledown.py         # 9 calls, about 4,600 free tokens
 ```
 
 Use Laya inside the layer:
@@ -177,8 +235,12 @@ layer = FCCL(context_fn=LayaContext())
 - [x] Careful experimenting with safety guards
 - [x] Learn how much to trust the context rule instead of using a fixed `ctx_strength`
 - [x] Replace the keyword detector with a real classifier (Laya, optional `context_fn`)
+- [x] Connect a real CDM (ScaleDown) behind a common interface, with a safety guard, and calibrate it on one text
+- [ ] Retry LLMLingua-2 as a compressor that can force-keep words (needs free RAM)
+- [ ] Test the compressors on more and longer texts
+- [ ] Decide what to do when the guard rejects a result (retry at the lowest useful rate, or another backend)
+- [ ] Make the plan aware of each backend's useful range (a choice between "none" and "at least X")
 - [ ] Test the detector on more messages with labels I didn't write, and run the simulation with it
-- [ ] Pick a compressor: ScaleDown (check API access and free tier) or a free local one that fits in memory; map `rate` to its settings
 - [ ] Per-user trust level instead of one shared level
 - [ ] Add `where` (which parts of the context may be compressed) and `keep_original` (reversible compression) to the plan
 - [ ] Test on real preference data, then a small human study
@@ -193,3 +255,4 @@ layer = FCCL(context_fn=LayaContext())
 - Stress test with three worlds and a `ctx_strength` dial for trusting the context rule
 - Adaptive trust: FCCL learns how much to trust the context rule
 - Laya as an optional conversation-type detector (`context_fn`); keyword vs Laya comparison on 20 hand-labelled messages (8/20 vs 18/20); LLMLingua-2 tried and dropped (out of memory)
+- CDM backends (ScaleDown API, local stand-in) with a guard that falls back to the original text; ScaleDown calibrated on one text (useful from about 50% removal, drops details); end-to-end demo
