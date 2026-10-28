@@ -40,8 +40,16 @@ class Feedback:
 
 
 def extract_preserve(text: str) -> List[str]:
-    """Placeholder: numbers and capitalised words (names) must survive compression."""
-    found = re.findall(r"\b\d+\b", text) + re.findall(r"\b[A-Z][a-z]+\b", text)
+    """Words that must survive compression: numbers, and capitalised words that are NOT at the
+    start of a sentence (likely names). Sentence-initial words like "Where" or "Ugh" are skipped,
+    because they are capitalised only by position. Trade-off: a name that opens a sentence
+    is not protected."""
+    found = re.findall(r"\b\d+\b", text)
+    for m in re.finditer(r"\b[A-Z][a-z]+\b", text):
+        before = text[:m.start()].rstrip()
+        if before == "" or before[-1] in ".!?\n":      # start of the text or of a sentence
+            continue
+        found.append(m.group())
     seen = []
     for w in found:
         if w not in seen:
