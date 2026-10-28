@@ -1,6 +1,9 @@
 """CDM backends for FCCL. Both take a CompressionPlan and return compressed text.
 
 ScaleDownCDM: the real ScaleDown API (needs SCALEDOWN_API_KEY in the environment).
+              Calibration on one 510-token text showed it only shortens text when asked to remove
+              about 50% or more (below that the output was LONGER), so requests below `min_removal`
+              are skipped without calling the API.
 SimpleCDM:    a free local stand-in that drops low-information words. No model, tiny memory.
 
 apply_plan() runs a backend, then checks the result and falls back to the original text if
@@ -25,7 +28,7 @@ class CDMResult:
     kept_words: float               # fraction of words kept, measured by us (1.0 = unchanged)
     kept_tokens: Optional[float]    # fraction of tokens kept, as reported by the backend (None if unknown)
     fell_back: bool                 # True if we threw the compression away
-    reason: str                     # "ok", or why we fell back
+    reason: str                     # "ok", or why it was skipped / fell back
 
 
 class SimpleCDM:
@@ -58,22 +61,26 @@ class SimpleCDM:
 class ScaleDownCDM:
     URL = "https://api.scaledown.xyz/compress/raw/"
 
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, min_removal=0.5):
         self.api_key = api_key or os.environ.get("SCALEDOWN_API_KEY")
         if not self.api_key:
             raise RuntimeError("Set the SCALEDOWN_API_KEY environment variable first.")
-        self.last = {}               # token counts from the most recent call
+        self.min_removal = min_removal   # don't call the API for requests to remove less than this
+        self.last = {}                   # info from the most recent call
 
     def compress(self, context: str, plan: CompressionPlan, prompt: str = "") -> str:
         self.last = {}
         if not plan.apply or plan.rate >= 1.0:
             return context
+        removal = round(1.0 - plan.rate, 2)      # ScaleDown's rate is the fraction REMOVED
+        if removal < self.min_removal:
+            self.last = {"skipped": True}        # saves free credit: it makes text longer down here
+            return context
         import requests
         body = {
             "context": context,
             "prompt": prompt or "Answer the user's latest message.",
-            # ScaleDown's rate is the fraction REMOVED; ours is the fraction KEPT.
-            "scaledown": {"rate": round(1.0 - plan.rate, 2)},
+            "scaledown": {"rate": removal},
         }
         r = requests.post(self.URL, json=body, headers={"x-api-key": self.api_key}, timeout=120)
         r.raise_for_status()
@@ -82,18 +89,27 @@ class ScaleDownCDM:
         return res["compressed_prompt"]
 
 
-def apply_plan(cdm, context: str, plan: CompressionPlan, prompt: str = "") -> CDMResult:
+def apply_plan(cdm, context: str, plan: CompressionPlan, prompt: str = "",
+               protect_context_ids: bool = True) -> CDMResult:
     """Run the CDM, then check the result. Falls back to the original text if protected words
-    (that were in the original) are missing, or if the output is not shorter."""
+    (that were in the original) are missing, or if the output is not shorter.
+    With protect_context_ids, numbers and codes inside the context (like 4821 or X540) are
+    protected too, not just words from the user's message."""
     if not plan.apply or plan.rate >= 1.0:
         return CDMResult(context, 1.0, None, False, "not compressed")
     out = cdm.compress(context, plan, prompt=prompt)
     info = getattr(cdm, "last", None) or {}
+    if info.get("skipped"):
+        return CDMResult(context, 1.0, None, False,
+                         f"skipped: asked to remove {1 - plan.rate:.0%}, below this backend's useful range")
     orig_t, comp_t = info.get("orig"), info.get("comp")
     words_kept = len(out.split()) / max(1, len(context.split()))
 
+    protected = list(plan.preserve)
+    if protect_context_ids:
+        protected += [t for t in re.findall(r"\b\w*\d\w*\b", context) if len(t) >= 2]
     low_ctx, low_out = context.lower(), out.lower()
-    missing = [w for w in plan.preserve if w.lower() in low_ctx and w.lower() not in low_out]
+    missing = sorted({w for w in protected if w.lower() in low_ctx and w.lower() not in low_out})
     if missing:
         return CDMResult(context, 1.0, 1.0, True, f"lost protected words: {missing}")
     if words_kept >= 1.0:
