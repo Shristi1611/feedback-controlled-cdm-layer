@@ -59,7 +59,10 @@ class FCCL:
     NEGATIVE = {"show_more", "correction", "regenerate", "thumbs_down"}
 
     def __init__(self, min_tokens=500, explore_prob=0.1, explore_step=0.1,
-                 floor=0.3, warmup=3, seed=0):
+                 floor=0.3, warmup=3, seed=0, use_context=True, learn=True, ctx_strength=1.0):
+        self.ctx_strength = ctx_strength   # 0 = ignore conversation type, 1 = trust the keyword rule fully
+        self.use_context = use_context     # False = ignore the conversation type (for testing)
+        self.learn = learn                 # False = ignore feedback and never experiment (for testing)
         self.min_tokens = min_tokens
         self.explore_prob = explore_prob   # how often to try compressing harder
         self.explore_step = explore_step   # how much harder (less text kept)
@@ -90,12 +93,14 @@ class FCCL:
             return p
         n = self.count.get(req.user_id, 0)
         self.count[req.user_id] = n + 1
-        c = self.context_weight(req.text)
+        c = 0.5
+        if self.use_context:               # shrink the context guess toward neutral (0.5)
+            c = 0.5 + self.ctx_strength * (self.context_weight(req.text) - 0.5)
         w = self.sat_weight.get(req.user_id, 1.0)
         keep = min(1.0, max(0.1, 1.0 - 0.7 * c * w))
         explored = False
         # Safe experimenting: past warm-up, user not unhappy, and stays above the floor.
-        if (n >= self.warmup and w >= 0.8 and keep - self.explore_step >= self.floor
+        if (self.learn and n >= self.warmup and w >= 0.8 and keep - self.explore_step >= self.floor
                 and self.rng.random() < self.explore_prob):
             keep -= self.explore_step
             explored = True
@@ -105,6 +110,8 @@ class FCCL:
         return p
 
     def feedback(self, fb: Feedback) -> None:
+        if not self.learn:
+            return
         w = self.sat_weight.get(fb.user_id, 1.0)
         last = self.last.get(fb.user_id)
         tried = last is not None and last.explored
