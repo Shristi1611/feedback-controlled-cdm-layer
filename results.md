@@ -1,0 +1,172 @@
+# FCCL results log
+
+A running record of every experiment: what was tested, what came out, and what it does and doesn't show.
+Add new entries at the bottom of "Experiments" and update the other sections as needed. Log started 2026-10-29.
+
+**Standing caveats (apply to everything below):**
+- The learning experiments (E1 to E4) use *simulated* users that I invented. They show the mechanism works, not how real people react.
+- The detector and compressor experiments (E5 onward) use a handful of hand-written texts. They are small samples.
+- I wrote most of the test texts and all the labels. Nothing here has been checked by an independent person.
+
+---
+
+## Experiments
+
+### E0. Earlier study: answer length (simulation)
+- **Question:** can a policy choose answer length per user, saving tokens without more dissatisfaction?
+- **Setup:** 5 answer-length levels (40, 100, 200, 380, 600 tokens; default level 3), simulated users with hidden preferences, weak feedback ("show more", "too long", occasional ratings). Policies: pooled, personalized, safe (risk-constrained). 10 paired seeds, token price 0.5.
+- **Result (button on):** personalized saved 21.6% of tokens, satisfaction +0.18, dissatisfied turns +0.3 pp; safe saved 14.9%, +0.17, +0.0 pp; pooled saved 19.7%, +0.04, +1.2 pp.
+- **Result (weak feedback):** without the show-more button or with sparse feedback, pooled and personalized lost satisfaction or added 2.5 to 7 pp dissatisfaction, while safe stayed within 0.3 pp of the default.
+- **Takeaway:** the risk constraint keeps users safe when feedback is thin, at the cost of smaller savings. Its ideas (per-user beliefs, safe exploration) carry into FCCL.
+- **Files:** `sim.py`, `policies.py`, `experiments.py`.
+
+### E1. FCCL ablation: do the two weights help? (simulation)
+- **Setup:** 100 fake users, 40 turns, 5 seeds. Hidden amount of context each user needs; "bad reaction" = a correction. The context rule holds for 60% of users. Keyword detector.
+- **Result:**
+
+| policy | tokens saved | bad reactions, first 10 turns | bad reactions, last 20 turns |
+|---|---|---|---|
+| no compression | 0.0% | 0.0% | 0.0% |
+| fixed keep 0.7 | 30.0% | 10.6% | 10.1% |
+| fixed keep 0.5 | 50.0% | 35.6% | 34.6% |
+| fixed keep 0.3 | 70.0% | 66.5% | 66.7% |
+| FCCL full | 36.7% | 12.2% | 3.2% |
+| FCCL, no context weight | 30.8% | 11.3% | 3.9% |
+| FCCL, no learning | 41.9% | 18.0% | 18.4% |
+| FCCL, neither | 35.0% | 15.4% | 15.8% |
+
+- **Takeaway:** learning protects users (late bad reactions 18.4% without it, 3.2% with it). The context weight mostly buys savings (about 6 points). FCCL is slightly worse than a fixed setting in the first turns (cost of learning).
+- **Caveat:** 60% of fake users follow the rule's pattern, so the context weight's benefit is probably overstated (see E2).
+
+### E2. Stress test: what if the context rule is wrong? (simulation)
+- **Setup:** three worlds (pattern holds for 60%, no pattern, pattern backwards for 60%), `ctx_strength` 0.0 / 0.25 / 0.5 / 1.0.
+- **Result (tokens saved / bad reactions first 10 turns / last 20 turns):**
+
+| world | strength 0.0 | 0.25 | 0.5 | 1.0 |
+|---|---|---|---|---|
+| pattern holds | 30.8 / 11.3 / 3.9 | 33.2 / 10.6 / 3.7 | 34.7 / 10.4 / 3.4 | 36.7 / 12.2 / 3.2 |
+| no pattern | 31.1 / 12.0 / 3.5 | 32.2 / 13.0 / 3.8 | 32.8 / 14.9 / 3.7 | 33.3 / 18.6 / 3.8 |
+| pattern backwards | 30.2 / 13.2 / 3.6 | 30.0 / 15.1 / 4.1 | 29.8 / 19.3 / 4.0 | 29.1 / 25.8 / 4.5 |
+
+- **Takeaway:** learning corrects a wrong guess (late bad reactions stay 3.2% to 4.5% everywhere), but a wrong guess is paid for early (25.8% vs 13.2% at full trust when the pattern is backwards). The context weight is an unbalanced bet. A low trust level (0.25) hedges.
+
+### E3. Adaptive trust (simulation)
+- **Setup:** an epsilon-greedy bandit chooses among trust levels 0, 0.25, 0.5, 1.0; reward = fraction saved minus 1.0 per bad reaction; ties go to the lower level.
+- **Result (tokens saved / bad first 10 / bad last 20):** pattern holds 34.0 / 11.3 / 3.6; no pattern 32.0 / 13.7 / 4.0; pattern backwards 30.0 / 14.9 / 3.9. In the backwards world it mostly picks trust 0.0 (70% of requests); when the pattern holds it leans to 0.5 and 1.0.
+- **Takeaway:** it never beats the best fixed setting in every world, but it avoids the full-trust disaster and keeps most of the gain, without being told which world it is in.
+- **Caveats:** one shared trust level for all users; the penalty of 1.0 is arbitrary.
+
+### E4. Conversation-type detector: keywords vs Laya
+- **Setup:** 20 messages I wrote and labelled (7 chatty, 7 logistics, 6 other), many deliberately avoiding the keyword lists. Laya (421M-parameter local decision model, Apache 2.0) asked: "what is the user mainly doing?" with the labels chatty / logistics / other.
+- **Result:** keyword rule 8/20, Laya 18/20.
+- **Details:** keywords missed venting without emotion words and practical requests without our words, and read "border" as "order". Laya's misses: "lol that movie was wild" (said other) and "Tell me about the history of Rome" (said chatty).
+- **Laya's confidences** were low (0.01 to 0.62) and the model warns they are uncalibrated; they did not cleanly separate right from wrong answers, so `LayaContext` does not gate on them (`min_conf=0.0`).
+- **Caveat:** tilted against keywords by design; the sample is small; label accuracy only, not whether the policy is right.
+- **Files:** `compare_context.py`, `laya_context.py`.
+
+### E5. ScaleDown on a short text (96 tokens)
+- **Result:** HTTP 200, the key works. Asked to remove 50%, the returned text was identical to the input; reported 96 to 70 tokens, but the text did not change. Billed `input_tokens` = 96.
+- **Takeaway:** very short inputs are passed through. Matches FCCL's `min_tokens=500`.
+
+### E6. ScaleDown on a longer text (511 tokens, 362 words)
+- **Result:**
+
+| asked to remove | tokens reported | words (ours) | protected |
+|---|---|---|---|
+| 30% | 511 to 473 | 362 to 413 | all kept |
+| 50% | 511 to 340 | 362 to 297 | all kept |
+| 70% | 511 to 203 | 362 to 176 | `X540` lost |
+
+- **Takeaway:** actual savings are lower than requested; at 30% the output repeats overlapping chunks and has more words than the input. Billing is by input size (511 per call).
+
+### E7. ScaleDown calibration (requested vs actual removal)
+- **Setup:** the same 511-token text at 10% to 90% removal, run twice; both runs gave identical numbers.
+- **Result:**
+
+| asked to remove | tokens kept (ScaleDown's count) | words kept (ours) | protected items lost |
+|---|---|---|---|
+| 10% | 110% | 135% | none |
+| 20% | 107% | 131% | none |
+| 30% | 93% | 114% | none |
+| 40% | 78% | 97% | `X540` |
+| 50% | 67% | 82% | none |
+| 60% | 52% | 65% | `X540` |
+| 70% | 40% | 49% | `X540` |
+| 80% | 26% | 32% | `4821`, `Park Street`, `X540` |
+| 90% | 13% | 15% | `4821`, `Park Street`, `X540` |
+
+- **Takeaways:** below about 50% requested removal the output is longer than the input; real savings start at 50%. It works on whole chunks (keeps the opening and the final request) and drops details without warning; the documented API has no way to protect words. Its token counts disagree with the text it returns, so we measure the text ourselves.
+- **Decision:** `ScaleDownCDM` skips the API call when the requested removal is below 50% (`min_removal`), saving credit.
+- **Caveat:** one text of about 510 tokens. Longer or different text may behave differently.
+- **File:** `calibrate_scaledown.py`.
+
+### E8. End-to-end demo with ScaleDown
+- **Setup:** Laya + FCCL + ScaleDown on the 511-token context, three cases.
+- **Result:** venting message (plan keep 0.79) skipped, below ScaleDown's useful range; logistics message (plan keep 0.44) compressed but **rejected by the guard** because `X540` was lost, so the original text was used and nothing was saved; tiny context not compressed.
+- **Takeaway:** the layer behaved as designed (gentler for venting, harder for logistics, nothing for tiny contexts), but with strict protection ScaleDown gave no safe savings on this text.
+- **File:** `demo_pipeline.py`.
+
+### E9. LLMLingua-2 on a short text (86 tokens, CPU)
+- **Setup:** `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank`, `device_map="cpu"`, with `force_tokens` for 4821, Rahul, Park, Street, X540, PM.
+- **Result:** keep 0.7 gave 59 of 86 tokens, keep 0.5 gave 42, keep 0.3 gave 24. All protected words survived at every level. Readable at 0.5, telegraphic but factual at 0.3.
+- **Takeaway:** honours the rate closely, protects forced words, free, runs on the CPU, no API.
+- **Caveats:** deletes individual words (grammar is lost); query-agnostic (ignores the user's question); one short text.
+
+### E10. End-to-end demo with LLMLingua-2 (511-token context)
+- **Result:** venting message (plan keep 0.79) kept 77% of words / 75% of tokens, accepted; logistics message (plan keep 0.44) kept 42% of words / 39% of tokens, accepted with all protected IDs surviving; tiny context not compressed.
+- **Takeaway:** first run with real savings that match the plan. The first 300 characters of the logistics output kept the stress paragraph while the question was about the order, which suggests query-agnostic selection can keep irrelevant content.
+
+### E11. Fact survival check (weak test)
+- **Setup:** 12 facts from the context, each checked by one keyword; keep rates 0.8, 0.6, 0.44, 0.3; LLMLingua-2 and the local SimpleCDM.
+- **Result:** LLMLingua-2 kept 12/12 at 0.8, 0.6 and 0.44; at 0.3 the guard rejected it (so that row is just the original). SimpleCDM also kept 12/12 down to 0.44 and 11/12 at 0.3 (missing: support calls on hold).
+- **Takeaway:** the test cannot tell good compression from bad, because both methods favour the keywords I picked (names, numbers, long words). It shows only that key tokens survive.
+- **File:** `fact_check.py`.
+
+### E12. Guard diagnosis for LLMLingua-2 at keep 0.3
+- **Result:** the guard rejected the raw output because it lost `Where`, a capitalised word from the start of the user's message. Raw words kept: 28%.
+- **Takeaway:** `extract_preserve` over-protects sentence-starting words; needless fallbacks result (see "Open bugs").
+
+### E13. Blinded quality test (PENDING)
+- **Plan:** 8 shuffled samples labelled S1 to S8 (original; LLMLingua-2 and SimpleCDM at keep 0.6, 0.44, 0.3; ScaleDown at 50% removal). An LLM answers six fixed questions from each sample without knowing which is which; answers are then graded against the original using the key.
+- **Status:** `make_blind_samples.py` has run; waiting for the answers and the key.
+- **Weakness:** the answerer is also the judge, and the sample is small.
+
+---
+
+## Decisions and why
+- "too_long" is not a negative reaction for compression learning: it is about answer length, not about compression.
+- FCCL's `rate` is the fraction *kept*; ScaleDown's is the fraction *removed* (converted inside `ScaleDownCDM`).
+- The guard falls back to the original text when protected words are lost or when the output is not shorter. It prefers no savings over lost details.
+- ID-like tokens in the context (numbers and codes such as 4821 or X540) are protected, not just words from the user's message.
+- `ScaleDownCDM.min_removal = 0.5`, from E7 (below that the output was longer).
+- Laya runs as `context_fn`, with the keyword rule kept as the default so the simulations stay reproducible.
+- LLMLingua-2 was dropped once (out of memory) and retried after a restart; it needs `device_map="cpu"` with a CPU-only PyTorch.
+
+## Open bugs and weaknesses
+- `extract_preserve` protects capitalised sentence-starting words (for example "Where", "Ugh"), causing needless fallbacks (E12).
+- The guard checks IDs and words, not meaning; a compressed text can keep every protected word and still lose what the user needs.
+- The simulations assume the requested rate is honoured exactly; ScaleDown does not do this.
+- One shared trust level for all users in adaptive trust.
+- Laya's confidence is uncalibrated and unused.
+
+## Environment notes (Windows laptop, about 6 GB RAM in use at peak)
+- Python 3.12 in a `.venv` created from Anaconda; `python` and `pip` resolve to the venv first.
+- Loading Laya or LLMLingua-2 failed with out-of-memory errors until the machine was restarted and other apps were closed. Laya needs about 1 GB free on top of `torch`.
+- Laya is cached at about 3.1 GB (all checkpoints); the English one loaded is about 0.8 GB.
+- The PowerShell profile error in `powershell -command` is harmless (a blocked profile script).
+- Hugging Face warns about symlinks and an unauthenticated token; both are harmless.
+- ScaleDown API key is stored as the Windows user environment variable `SCALEDOWN_API_KEY` (never in a file in the repo).
+
+## ScaleDown free-token log (estimates; check the dashboard)
+Billing is by input size (about 511 tokens per call on the long text). Calls so far: E5 (96), E6 (3 x 511), E7 (2 runs x 9 x 511), E8 (2 x 511 for the first demo, 1 x 511 after `min_removal` was added). Estimated total about 12,400 of the 1,000,000 free tokens.
+
+## Entry template
+```
+### E<n>. <short title>
+- **Question:**
+- **Setup:**
+- **Result:**
+- **Takeaway:**
+- **Caveats:**
+- **Files:**
+```
