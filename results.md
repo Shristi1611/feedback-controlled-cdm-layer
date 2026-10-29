@@ -268,3 +268,27 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 - **Caveats:** fixed 0.6 was chosen with hindsight of the curve; every simulated user shares the same loss curve and differs only in sensitivity, so heterogeneity barely shows on the flat part; the curve is from three texts, one judge; real content types and users with different needs are not modelled. The measured data also gave no support for "venting needs more context": on the fact-recall measure the vent text lost less than the technical text at every keep level (this does not test the premise, which is about what users want).
 - **Next:** add real heterogeneity (a picky minority, content types with different curves) to see when personalization can beat a fixed keep; then consider re-anchoring FCCL's plan to the curve.
 - **File:** `real_curve_sim.py`.
+
+
+### E17. Real-data test: compression vs question answering (SQuAD, 150 questions)
+- **Question:** on real passages with human-marked answers, how much does compression hurt, measured by an objective model instead of my judging?
+- **Setup:** `real_squad_test.py`; 150 random SQuAD v1 validation questions (seed 0); passages compressed by LLMLingua-2 (CPU) and SimpleCDM at keep 0.8, 0.6, 0.45, 0.3 with FCCL's protection rule (numbers and mid-sentence capitalised words from the question) and the guard on (the original passage is used when the guard falls back); `distilbert-base-cased-distilled-squad` answers by extracting a span (windows of 384 tokens, stride 128); F1 and exact match against the human answers; 95% margins.
+- **Result:**
+
+| method | keep | words kept | guard fell back | answer text survives | F1 | EM | F1 relative to original |
+|---|---|---|---|---|---|---|---|
+| original | 1.0 | 100% | 0% | 100% | 82.5 +- 5.5 | 74.7 +- 7.0 | 100% |
+| LLMLingua-2 | 0.8 | 82% | 0% | 82% | 75.9 +- 5.9 | 60.0 +- 7.9 | 92% |
+| LLMLingua-2 | 0.6 | 58% | 1% | 74% | 64.4 +- 6.4 | 42.7 +- 7.9 | 78% |
+| LLMLingua-2 | 0.45 | 42% | 1% | 69% | 55.8 +- 6.5 | 33.3 +- 7.6 | 68% |
+| LLMLingua-2 | 0.3 | 27% | 1% | 55% | 43.2 +- 6.5 | 24.0 +- 6.9 | 52% |
+| SimpleCDM | 0.8 | 80% | 0% | 91% | 80.9 +- 5.4 | 66.7 +- 7.6 | 98% |
+| SimpleCDM | 0.6 | 62% | 5% | 77% | 72.9 +- 5.9 | 50.0 +- 8.0 | 88% |
+| SimpleCDM | 0.45 | 55% | 18% | 69% | 60.9 +- 6.5 | 38.7 +- 7.8 | 74% |
+| SimpleCDM | 0.3 | 45% | 21% | 63% | 49.6 +- 6.9 | 31.3 +- 7.4 | 60% |
+
+- **Takeaways:** quality falls steadily with compression; there is no plateau at 0.6 and no sharp knee at 0.45. This contradicts the hand-judged curve of E13/E14 (99% at 0.6): that test was lenient (a strong reader reconstructing meaning from clipped text, partial credit, keyword-friendly questions), while this one is strict (an extractive model must find the answer in the text word for word, so dropped small words inside an answer count against it). The true cost for an LLM answerer is probably between the two. SimpleCDM is at least as good as LLMLingua-2 at similar words kept (borderline; margins about +-6; no paired test yet), and its guard rejects it often at low rates (18% to 21%, meaning no savings on those questions) while LLMLingua-2 almost never falls back because its protected words are forced to stay.
+- **Consequences:** the `min_keep=0.45` floor has no knee to justify it (it is still a harmless safety net, but the number is not supported); the E16 conclusion ("fixed keep 0.6 beats FCCL") rested on the flat curve and is unsupported.
+- **Caveats:** Wikipedia passages (about 120 to 200 words) and single factual questions, not conversations; an extractive model, not a generative LLM; margins of +-5 to 8 points; unpaired comparisons between methods; the question's own names and numbers are protected, which helps retrieval of exactly the facts asked about; one run, one seed.
+- **Next:** repeat with an LLM answerer and semantic grading on the same real questions, then rebuild the simulation on the measured curve.
+- **File:** `real_squad_test.py` (output `squad_results.txt`, not committed).
