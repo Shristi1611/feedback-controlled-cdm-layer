@@ -292,3 +292,24 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 - **Caveats:** Wikipedia passages (about 120 to 200 words) and single factual questions, not conversations; an extractive model, not a generative LLM; margins of +-5 to 8 points; unpaired comparisons between methods; the question's own names and numbers are protected, which helps retrieval of exactly the facts asked about; one run, one seed.
 - **Next:** repeat with an LLM answerer and semantic grading on the same real questions, then rebuild the simulation on the measured curve.
 - **File:** `real_squad_test.py` (output `squad_results.txt`, not committed).
+
+## E18 - Real SQuAD, generative LLM answerer (2026-10-29)
+Setup: 60 random SQuAD validation questions (seed 0). Answerer openai/gpt-oss-20b (Groq), judge openai/gpt-oss-120b,
+correct = normalised containment of a gold answer, or judge YES when containment fails. Script: real_squad_llm_test.py.
+
+| method | keep | words kept % | guard fell back % | says unknown % | correct % (95% margin) |
+|---|---|---|---|---|---|
+| original | 1.0 | 100 | 0 | 0 | 96.7 +-4.5 |
+| LLMLingua-2 | 0.8 | 82 | 0 | 0 | 96.7 +-4.5 |
+| LLMLingua-2 | 0.6 | 58 | 0 | 5 | 88.3 +-8.1 |
+| LLMLingua-2 | 0.45 | 42 | 0 | 7 | 78.3 +-10.4 |
+| LLMLingua-2 | 0.3 | 27 | 0 | 23 | 51.7 +-12.6 |
+| SimpleCDM | 0.6 | 62 | 5 | 2 | 91.7 +-7.0 |
+| SimpleCDM | 0.45 | 55 | 18 | 12 | 76.7 +-10.7 |
+
+Findings:
+- Quality falls steadily; no knee at 0.45. Keep 0.8 is free; 0.6 costs about 8 points (borderline significant); 0.45 about 18; 0.3 about 45.
+- The hand-judged blind test (E-blind) was too lenient. min_keep=0.45 has no measured knee behind it; E16 conclusion (fixed keep 0.6 beats FCCL) is unsupported because it used that flat curve.
+- LLMLingua-2 is not clearly better than SimpleCDM at keep 0.6 (88.3 vs 91.7, within noise).
+- Caveats: SQuAD is single-fact lookup, close to a worst case for compression; n=60; one answerer model; judge is an LLM.
+Decision: demo min_keep 0.45 -> 0.6. Next: rebuild the simulation on this measured curve.
