@@ -77,10 +77,10 @@ if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     makers = {
         "fixed keep 0.7": lambda s: FixedRate(0.7),
-        "FCCL strength 0.0": lambda s: FCCL(seed=s, ctx_strength=0.0),
-        "FCCL strength 0.25": lambda s: FCCL(seed=s, ctx_strength=0.25),
-        "FCCL strength 1.0": lambda s: FCCL(seed=s, ctx_strength=1.0),
-        "FCCL adaptive trust": lambda s: FCCL(seed=s, adaptive_trust=True),
+        "FCCL strength 0.0": lambda s: FCCL(seed=s, ctx_strength=0.0, min_keep=0.1),
+        "FCCL strength 0.25": lambda s: FCCL(seed=s, ctx_strength=0.25, min_keep=0.1),
+        "FCCL strength 1.0": lambda s: FCCL(seed=s, ctx_strength=1.0, min_keep=0.1),
+        "FCCL adaptive trust": lambda s: FCCL(seed=s, adaptive_trust=True, min_keep=0.1),
     }
     for scen, kw in SCENARIOS.items():
         print(f"\n{scen}")
