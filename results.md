@@ -336,3 +336,22 @@ blends k=1/3/10/30/100: 56.9/58.0/59.1/59.2/59.2. User-only learning curve rises
 Finding: per-user length adaptation does not beat a global prior at ~12 turns/user; personal preference is weak.
 Caveats: length is confounded with model quality (different models per turn); one crude feature; no prompt-type or stated-preference features; about output length, not input compression.
 Implication: do not claim per-user adaptation helps; keep a strong global prior; feedback-driven settings will lean toward less compression.
+
+## E21 - Real DREAM dialogues, generative LLM answerer (2026-10-29, partial: 47 of 100 planned)
+Setup: DREAM validation, dialogues of 100+ words (921 eligible), 47 questions of a fixed random sample (seed 0; run stopped by Groq free rate limit).
+Answerer openai/gpt-oss-20b, multiple choice (3 options, shuffled), exact scoring, no judge. Speaker labels rewritten (Man/Woman) and protected. Script: real_dream_llm_test.py.
+| method | keep | words kept % | guard fell back % | correct % (95% margin) | paired diff vs original | p |
+|---|---|---|---|---|---|---|
+| no dialogue | 0.0 | 0 | 0 | 27.7 +-12.8 | -68.1 | 0.000 |
+| original | 1.0 | 100 | 0 | 95.7 +-5.8 | | |
+| LLMLingua-2 | 0.8 | 91 | 4 | 93.6 +-7.0 | -2.1 (1 lost, 0 gained) | 1.000 |
+| LLMLingua-2 | 0.6 | 68 | 0 | 87.2 +-9.5 | -8.5 (4 lost, 0 gained) | 0.125 |
+| LLMLingua-2 | 0.45 | 51 | 0 | 72.3 +-12.8 | -23.4 (11 lost, 0 gained) | 0.001 |
+| LLMLingua-2 | 0.3 | 34 | 0 | 68.1 +-13.3 | -27.7 (13 lost, 0 gained) | 0.000 |
+| SimpleCDM | 0.6 | 60 | 0 | 91.5 +-8.0 | -4.3 (2 lost, 0 gained) | 0.500 |
+| SimpleCDM | 0.45 | 46 | 2 | 76.6 +-12.1 | -19.1 (9 lost, 0 gained) | 0.004 |
+Findings: sanity checks pass (no-dialogue 27.7% vs ~33% chance; original 95.7%). Curve matches SQuAD (E18): 0.8 free, 0.6 about -8.5, 0.45 about -23.
+Chat-style dialogue did NOT tolerate more compression than SQuAD. Pooling E18 and E21 informally, LLMLingua-2 at keep 0.6: 9 lost, 0 gained (sign test p about 0.004); at 0.8: 2 lost, 1 gained.
+Compression never improved an answer. SimpleCDM >= LLMLingua-2 at keep 0.6 on both datasets (within noise).
+Caveats: n=47; the 0.3 row is damped by the 3-choice floor; DREAM dialogues are short and dense, not redundant; genuinely filler-heavy or venting text untested; one answerer model.
+Decision: keep 0.8 as the no-cost level and 0.6 as the lowest allowed; no change to min_keep recommendation.
