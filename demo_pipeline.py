@@ -45,7 +45,7 @@ elif mode == "lingua":
 else:
     cdm, name = ScaleDownCDM(), "ScaleDown API"
 detector = LayaContext()
-layer = FCCL(context_fn=detector, seed=0, min_keep=0.45)
+layer = FCCL(context_fn=detector, seed=0, min_keep=0.6)
 print("backend:", name)
 
 for case, message in CASES:
