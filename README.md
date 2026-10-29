@@ -2,20 +2,20 @@
 
 A feedback-driven layer between users and CDMs that decides when and how hard to compress, without hurting answer quality.
 
-**Status:** working prototype with a measured safe range. The guarded compression pipeline works, and its quality cost has been measured on real data (real SQuAD questions, a real generative LLM, real compressors). The two ideas that made the project distinctive, learning per user and weighting by conversation context, have **not** been supported by real data so far: a real-data test of per-user length adaptation (PRISM) found it did not beat a single global rule. The learning results in the simulation sections below use *invented* users, so they show that the mechanism works, not that it helps real people. The full experiment log is in [`results.md`](results.md).
+**Status:** working prototype with a measured safe range. The guarded compression pipeline works, and its quality cost has been measured on real data (real SQuAD questions and real DREAM dialogues, a real generative LLM, real compressors). The two ideas that made the project distinctive, learning per user and weighting by conversation context, have **not** been supported by real data so far: a real-data test of per-user length adaptation (PRISM) found it did not beat a single global rule. The learning results in the simulation sections below use *invented* users, so they show that the mechanism works, not that it helps real people. The full experiment log is in [`results.md`](results.md).
 
 ## What real data says (read this first)
 
 | claim | evidence | status |
 |---|---|---|
-| Guarded compression at a mild rate is safe | SQuAD with a generative LLM: keep 0.8 shows no measurable loss (E18) | supported, on lookup-style tasks |
-| Compression below about 0.6 is cheap | keep 0.6 costs about 8 points, 0.45 about 18, 0.3 about 45; there is **no knee at 0.45** (E18, E17) | rejected |
+| Guarded compression at a mild rate is safe | SQuAD with a generative LLM: keep 0.8 shows no measurable loss (E18); same on DREAM dialogues (E21) | supported, on the two kinds of task tested |
+| Compression below about 0.6 is cheap | keep 0.6 costs about 8 points, 0.45 about 18 to 23, 0.3 much more; there is **no knee at 0.45**; dialogue questions (DREAM, E21) behave like SQuAD (E18, E17) | rejected |
 | The guard is worth having | at nominal keep 0.45 it caught 18% of cases the naive compressor would have damaged (E18) | supported |
 | Learning each user's preference beats a global rule | PRISM, 1,389 users: global rule 59.2% vs per-user learning 55.8% pairwise accuracy; held after controlling for the model (E19, E20) | not supported (answer length only) |
 | The context weight helps | one real check by conversation type found no strong effect; chatty/logistics contexts untested on real data (E20) | not supported, not yet fairly tested |
 | Laya labels conversation types better than keywords | 18/20 vs 8/20 on 20 messages I wrote and labelled | weak evidence |
 
-Recommended settings today: keep rate **0.8** costs nothing detectable; **0.6** is the lowest I would allow (`min_keep=0.6`), and it likely costs a few points; keep the guard on.
+Recommended settings today: keep rate **0.8** costs nothing detectable; **0.6** is the lowest I would allow (`min_keep=0.6`), and it costs a few points; keep the guard on.
 
 ## The idea
 
@@ -47,7 +47,7 @@ Each decision combines two weights and a safety limit on experimenting:
 - **Satisfaction weight:** one number per user, updated from reactions to the answer ("show more", correction, regenerate, thumbs). Unhappy users get compressed less. Reactions to the *answer* count, not general mood, so a user venting is not treated as dissatisfied.
 - **Careful experimenting:** the layer sometimes compresses a little harder for users who seem happy. It never experiments during a user's first few requests, never for unhappy users, and never below a floor. It remembers which plans were experiments, so a bad reaction can be traced back to the experiment and punished harder.
 - **Adaptive trust:** the layer keeps a score for each trust level (0, 0.25, 0.5, 1.0): text saved, minus a penalty for each bad reaction. It mostly uses the best-scoring level, tries a random one 15% of the time, and ties go to the lower (safer) level.
-- **Hard minimum (`min_keep`):** no plan ever keeps less than this fraction of the text. The default is 0.1 (the old behaviour, so earlier simulation results stay reproducible). Real quality tests (below) show no loss at 0.8, a likely small loss at 0.6 and a clear loss at 0.45 and below, so use `min_keep=0.6` with a real compressor.
+- **Hard minimum (`min_keep`):** no plan ever keeps less than this fraction of the text. The default is 0.1 (the old behaviour, so earlier simulation results stay reproducible). Real quality tests (below) show no loss at 0.8, a small loss at 0.6 and a clear loss at 0.45 and below, so use `min_keep=0.6` with a real compressor.
 
 The plan it produces has three fields so far: `apply` (compress at all?), `rate` (fraction of the text to keep) and `preserve` (words that must survive: numbers, and capitalised words that are not at the start of a sentence).
 
@@ -94,13 +94,36 @@ Paired against the original on the same questions (`paired_analysis.py`, exact s
 - **There is no knee at 0.45.** The hand-judged blind tests below were too lenient.
 - LLMLingua-2 and SimpleCDM cannot be separated at keep 0.6 with 60 questions.
 - At nominal 0.45, SimpleCDM only kept 55% of words because the guard fell back to the original on 18% of questions, so that row is not comparable.
-- SQuAD is single-fact lookup, close to a worst case for compression. Redundant chat context probably loses less, but that has not been measured.
+- SQuAD is single-fact lookup, close to a worst case for compression.
 
 Run it with `python real_squad_llm_test.py 60` (needs `GROQ_API_KEY`; resumable) and then `python paired_analysis.py`.
 
 ### Compression quality on real SQuAD, strict extractive reader (E17)
 
 150 questions, DistilBERT extractive QA. F1 was about 64 to 73 at keep 0.6 against 82.5 for the original text, with a steady decline as compression increases. This is the strict end; the generative LLM above is more forgiving, and the truth for a given reader sits between the two. Run it with `python real_squad_test.py`.
+
+### Compression quality on real dialogues, DREAM (E21, partial)
+
+47 multiple-choice questions about conversations of 100+ words (the run was stopped early by a free rate limit). Same answerer as above, exact scoring (the model replies with a letter, choices shuffled), speaker labels rewritten as "Man:" and "Woman:" and protected.
+
+| method | keep | words kept | guard fell back | correct (95% margin) | paired change vs original | p |
+|---|---|---|---|---|---|---|
+| no dialogue | 0.0 | 0% | 0% | 27.7% (±12.8) | -68.1 | 0.000 |
+| original | 1.0 | 100% | 0% | 95.7% (±5.8) | | |
+| LLMLingua-2 | 0.8 | 91% | 4% | 93.6% (±7.0) | -2.1 (1 lost, 0 gained) | 1.000 |
+| LLMLingua-2 | 0.6 | 68% | 0% | 87.2% (±9.5) | -8.5 (4 lost, 0 gained) | 0.125 |
+| LLMLingua-2 | 0.45 | 51% | 0% | 72.3% (±12.8) | -23.4 (11 lost, 0 gained) | 0.001 |
+| LLMLingua-2 | 0.3 | 34% | 0% | 68.1% (±13.3) | -27.7 (13 lost, 0 gained) | 0.000 |
+| SimpleCDM | 0.6 | 60% | 0% | 91.5% (±8.0) | -4.3 (2 lost, 0 gained) | 0.500 |
+| SimpleCDM | 0.45 | 46% | 2% | 76.6% (±12.1) | -19.1 (9 lost, 0 gained) | 0.004 |
+
+- The test is sane: with no dialogue the model scores 27.7% (chance is about 33%), and 95.7% on the original.
+- Chat-style dialogue did **not** tolerate more compression than SQuAD. The curve is almost the same (0.8 free, 0.6 about -8.5, 0.45 about -23). The 0.3 row is damped by the 3-choice floor.
+- Pooling E18 and E21 informally (same answerer, different tasks), LLMLingua-2 at keep 0.6 lost 9 questions and gained none (p of about 0.004), so the 0.6 cost looks real. At keep 0.8 pooled: 2 lost, 1 gained.
+- SimpleCDM matched or beat LLMLingua-2 at keep 0.6 on both datasets, within noise.
+- Caveat: DREAM dialogues are short and dense, so this does not test filler-heavy or repetitive text.
+
+Run it with `python real_dream_llm_test.py 100` (needs `GROQ_API_KEY`; resumable; stops cleanly at the free rate limit and reports on the questions finished).
 
 ### Does learning each user's preference help? PRISM (E19, E20)
 
@@ -194,7 +217,7 @@ Run the current comparison with `python fccl_sim.py 5`.
 
 ### A hard minimum keep (`min_keep`)
 
-Without a floor, full-trust FCCL plans below 0.45 (where the real tests measured about an 18-point accuracy loss) in 26%, 20% and 10% of compressions in the three worlds (adaptive trust: 8%, 3% and 2%).
+Without a floor, full-trust FCCL plans below 0.45 (where the real tests measured about an 18 to 23 point accuracy loss) in 26%, 20% and 10% of compressions in the three worlds (adaptive trust: 8%, 3% and 2%).
 
 | world | policy | tokens saved | bad % first 10 | bad % last 20 | plans below 0.45 |
 |---|---|---|---|---|---|
@@ -209,7 +232,7 @@ Without a floor, full-trust FCCL plans below 0.45 (where the real tests measured
 | | strength 1.0, min_keep 0.6 | 27.5% | 19.0% | 4.3% | 0.0% |
 
 - A floor of 0.45 costs at most about 0.7 points of savings and slightly lowers bad reactions in two of three worlds. A floor of 0.3 does almost nothing (not shown). A floor of 0.6 trades about 5 points of savings for 5 to 7 fewer points of early bad reactions.
-- The simulation shows the *cost* of the floor in savings. The real SQuAD tests show quality loss already at 0.6 and a clear loss at 0.45, so the 0.6 rows are the relevant ones, and the original "knee at 0.45" reasoning does not hold.
+- The simulation shows the *cost* of the floor in savings. The real SQuAD and DREAM tests show quality loss already at 0.6 and a clear loss at 0.45, so the 0.6 rows are the relevant ones, and the original "knee at 0.45" reasoning does not hold.
 
 Run it with `python floor_sim.py 5`.
 
@@ -270,9 +293,9 @@ It drops specific details without warning, its token counts don't always match t
 | 0.3 | SimpleCDM | 4.6 | 4.2 | 4.7 | 4.5 |
 | ScaleDown, 50% removal (text A only) | | 4.5 | | | |
 
-> **These blind tests were too lenient and their main conclusion did not survive.** They suggested a knee near keep 0.44 with near-lossless compression above it. The later real SQuAD tests (above) found a steady decline with a clear loss at 0.45, about 8 points at 0.6, and no free level below 0.8. The likely reasons: the judge could reconstruct meaning from short text, had the ground truth, and the questions rewarded keeping keywords. Keep the findings that still hold: the two local methods are within noise of each other, ScaleDown fails by dropping whole passages, and what differs between methods is mainly how they *fail*.
+> **These blind tests were too lenient and their main conclusion did not survive.** They suggested a knee near keep 0.44 with near-lossless compression above it. The later real tests (SQuAD and DREAM, above) found a steady decline with a clear loss at 0.45, about 8 points at 0.6, and no free level below 0.8. The likely reasons: the judge could reconstruct meaning from short text, had the ground truth, and the questions rewarded keeping keywords. Keep the findings that still hold: the two local methods are within noise of each other, ScaleDown fails by dropping whole passages, and what differs between methods is mainly how they *fail*.
 
-- The two local methods are within noise of each other. A toy word-dropper matching LLMLingua-2 suggests the test is not discriminating enough to rank compressors.
+- The two local methods are within noise of each other. A toy word-dropper matching LLMLingua-2 suggests the test is not discriminating enough to rank compressors. The later real tests agree: SimpleCDM matched or beat LLMLingua-2 at keep 0.6 on both datasets, within noise.
 - ScaleDown kept the most words (82%) and still scored lowest, losing whole paragraphs and repeating others, though it kept the four requests.
 - The guard and the protected tokens matter more than which compressor is used.
 
@@ -291,7 +314,7 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 - Adaptive trust uses one trust level shared by all users, while real populations are mixed. The penalty for a bad reaction (1.0) is a number I chose, not a measured one.
 - The simulations use the keyword detector. Laya is wired in as an option but has not been run end to end inside the simulation or on real conversations.
 - The detector comparison is 20 messages that I wrote and labelled.
-- **The real quality curve is from SQuAD, which is single-fact lookup** and close to a worst case for compression. It is 60 questions, one answerer model (`gpt-oss-20b`) and one judge. Chat-style context may behave differently, and the 0.6 loss is borderline significant (p = 0.062).
+- **The real quality curves come from two datasets of dense text.** SQuAD is single-fact lookup (60 questions, close to a worst case for compression); DREAM is dialogue inference (47 questions, short and dense). Both use one answerer model (`gpt-oss-20b`). Genuinely repetitive or filler-heavy text, such as venting, is untested and might tolerate more compression. The 0.6 loss is borderline significant within each dataset and clearer when they are pooled informally.
 - **The hand-judged blind tests were too lenient** (one model as both answerer and judge, with ground truth). Their "0.45 knee" is rejected and should not be relied on.
 - **PRISM tests output length, not input compression,** with one feature, a simple learner and about 12 turns per user. A negative result there does not rule out other kinds of per-user adaptation, other features, longer histories or survey-based starting guesses (untested).
 - The guard checks protected words and length, not meaning: a compressed text can keep every protected word and still lose what the user needs.
@@ -323,6 +346,7 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 | `real_squad_test.py` | real SQuAD with an extractive reader (strict) |
 | `real_squad_llm_test.py` | real SQuAD with a generative LLM answerer and LLM judge (Groq, resumable) |
 | `paired_analysis.py` | paired significance analysis of the SQuAD LLM results |
+| `inspect_dream.py`, `real_dream_llm_test.py` | DREAM dialogues: structure check, and the multiple-choice compression test (Groq, resumable) |
 | `inspect_prism.py`, `prism_length_test.py`, `prism_control_test.py` | PRISM: structure, per-user length adaptation, model and conversation-type controls |
 | `sim.py`, `policies.py`, `experiments.py` | the earlier answer-length study |
 | `results.md` | the full log of every experiment, with caveats |
@@ -345,12 +369,14 @@ python demo_pipeline.py local   # whole pipeline with the free local compressor
 python demo_pipeline.py lingua  # whole pipeline with LLMLingua-2 (about 1-2 GB free RAM)
 ```
 
-Real-data tests (need `pip install datasets huggingface_hub requests numpy`; the SQuAD LLM test needs a free Groq key):
+Real-data tests (need `pip install datasets huggingface_hub requests numpy`; the SQuAD and DREAM LLM tests need a free Groq key):
 
 ```
 setx GROQ_API_KEY "your-key"          # Windows; open a new terminal afterwards
 python real_squad_llm_test.py 60      # about 30 minutes; saves progress, safe to rerun
 python paired_analysis.py             # significance of the drops, no API calls
+python inspect_dream.py               # look at the DREAM data
+python real_dream_llm_test.py 100     # dialogues; stops cleanly at the free rate limit, rerun to continue
 python inspect_prism.py               # look at the PRISM data
 python prism_length_test.py           # per-user length adaptation vs a global rule
 python prism_control_test.py          # same, with model and conversation-type controls
@@ -384,10 +410,11 @@ layer = FCCL(context_fn=LayaContext(), min_keep=0.6)
 - [x] Hard minimum keep (`min_keep`) with its cost measured in the simulation
 - [x] Measure compression quality on real questions with a real LLM (SQuAD, E17 and E18): no knee, 0.8 free, 0.6 about -8 points
 - [x] First real-data test of per-user adaptation (PRISM, E19 and E20): not supported for answer length
+- [x] Test on dialogue context (DREAM, E21, partial): same curve as SQuAD
+- [ ] Test genuinely redundant or filler-heavy text (repetition, venting), and use more answerer models
 - [ ] Raise the default `min_keep` in `fccl.py` from 0.1 to a measured-safe value (0.6)
 - [ ] Rerun the simulation on the measured quality curve (users would still be invented, so label it a sim)
 - [ ] Test whether survey-stated preferences (PRISM) give a useful starting guess for a new user, and try features other than length
-- [ ] Test on chat-style, redundant context (not just single-fact lookup), with more questions and more answerer models
 - [ ] Test the context weight on real chatty vs logistics conversations
 - [ ] Make the plan aware of each backend's useful range (a choice between "none" and "at least X")
 - [ ] Decide what to do when the guard rejects a result (retry at a gentler rate, or another backend)
@@ -412,3 +439,4 @@ layer = FCCL(context_fn=LayaContext(), min_keep=0.6)
 - Real SQuAD tests: extractive reader (E17) and generative LLM answerer with judge (E18), with a paired analysis. Quality falls steadily; no knee at 0.45; keep 0.8 is free, 0.6 about -8 points
 - PRISM tests (E19, E20): per-user length adaptation did not beat a global rule, even after controlling for model quality and conversation type
 - README rewritten to match the real-data evidence; demo and usage snippet now use `min_keep=0.6`
+- Real DREAM dialogue test (E21, partial): the compression curve matches SQuAD; dense dialogues did not tolerate more compression
