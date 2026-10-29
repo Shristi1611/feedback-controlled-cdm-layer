@@ -247,3 +247,24 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 - **Decision:** code default stays `min_keep=0.1` so earlier simulation results stay reproducible; use `min_keep=0.45` with real compressors (`demo_pipeline.py` does).
 - **Caveats:** the simulation shows the cost of the floor, not that 0.45 is right; that number comes from three texts judged by one model (E13, E14). Differences of about 0.5 point are noise.
 - **Files:** `fccl.py` (`min_keep`), `floor_sim.py`.
+
+
+### E16. Simulation using the measured quality curve
+- **Question:** once the simulation uses the measured quality-vs-keep curve (instead of invented thresholds), does FCCL beat a fixed keep?
+- **Setup:** `real_curve_sim.py`. Quality kept at each keep level = mean blind-test score / 6 (E13, E14; both local methods averaged): 1.0 gives 100%, 0.6 gives 99%, 0.44 gives 92.5%, 0.3 gives 76%, 0.1 gives 52% (extrapolated, a guess). A user's chance of a correction is `K x sensitivity x quality lost`. Measured: the curve. Still invented: the user sensitivities and the dial K (3 = users care moderately, 6 = strongly). 100 users, 40 turns, 5 seeds, three worlds. "Quality kept" is averaged over planned compressions, weighted by context size.
+- **Result (tokens saved % / quality kept % / bad % first 10 turns / bad % last 20 turns):**
+
+| K | world | fixed keep 0.6 | FCCL strength 1.0, min_keep 0.45 | FCCL adaptive, min_keep 0.45 |
+|---|---|---|---|---|
+| 3 | pattern holds | 40.0 / 99.0 / 1.3 / 1.6 | 39.3 / 96.4 / 4.6 / 4.0 | 39.1 / 97.8 / 2.3 / 3.1 |
+| 3 | no pattern | 40.0 / 99.0 / 1.5 / 1.9 | 38.4 / 96.6 / 5.9 / 4.3 | 38.6 / 97.8 / 2.7 / 3.5 |
+| 3 | pattern backwards | 40.0 / 99.0 / 1.7 / 1.8 | 37.6 / 96.8 / 7.6 / 5.1 | 38.0 / 98.0 / 3.2 / 3.9 |
+| 6 | pattern holds | 40.0 / 99.0 / 3.1 / 3.1 | 36.6 / 97.1 / 8.8 / 5.1 | 36.5 / 98.3 / 4.5 / 4.4 |
+| 6 | no pattern | 40.0 / 99.0 / 3.3 / 3.6 | 35.2 / 97.5 / 10.9 / 5.4 | 35.6 / 98.5 / 4.6 / 4.6 |
+| 6 | pattern backwards | 40.0 / 99.0 / 3.4 / 3.6 | 34.2 / 97.7 / 12.4 / 5.8 | 35.1 / 98.6 / 4.9 / 5.0 |
+
+- Other fixed settings (K=3, pattern holds): keep 0.8 gives 20.0 / 99.5 / 0.8 / 1.0; keep 0.45 gives 55.0 / 92.9 / 11.0 / 10.4; keep 0.3 gives 70.0 / 76.0 / 36.9 / 36.9. At K=6 the bad-reaction rates roughly double.
+- **Takeaways:** fixed keep 0.6 (right at the knee) beats every FCCL variant on savings, quality and bad reactions, in all three worlds and at both K. FCCL's formula (keep roughly 0.44 to 0.79) is not anchored to the measured curve: logistics plans land on the steep part, venting plans leave savings unused. Inside the FCCL family: learning still lowers bad reactions over time, the floor and adaptive trust still help, and the context weight adds at most about 1.5 points of savings while costing quality (98.4% to 95.2% at K=3).
+- **Caveats:** fixed 0.6 was chosen with hindsight of the curve; every simulated user shares the same loss curve and differs only in sensitivity, so heterogeneity barely shows on the flat part; the curve is from three texts, one judge; real content types and users with different needs are not modelled. The measured data also gave no support for "venting needs more context": on the fact-recall measure the vent text lost less than the technical text at every keep level (this does not test the premise, which is about what users want).
+- **Next:** add real heterogeneity (a picky minority, content types with different curves) to see when personalization can beat a fixed keep; then consider re-anchoring FCCL's plan to the curve.
+- **File:** `real_curve_sim.py`.
