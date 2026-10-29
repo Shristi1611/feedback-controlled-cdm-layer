@@ -215,3 +215,35 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 ### Fix log
 - 2026-10-29: `extract_preserve` no longer protects sentence-initial capitalised words (commit 43e8fcc). Verified: "Where is order 4821 ... Friday" gives `['4821', 'Friday']`, "Ugh I feel so stressed ..." gives `[]`. The simulation output is unchanged. Trade-off: a name that opens a sentence is not protected.
 - SimpleCDM weakness found: only pure digits count as IDs, so "12th" and "29th" are dropped at high compression. The guard catches this.
+
+
+### E15. Hard minimum keep (`min_keep`) in the simulation
+- **Question:** how often does FCCL plan below the quality knee found in E13/E14 (about 0.45 keep), and what does a floor cost?
+- **Setup:** new `min_keep` setting in `FCCL` (default 0.1 = old behaviour); `floor_sim.py` runs the three simulated worlds, 5 seeds, and counts plans below 0.45. Simulated users, with tolerances I invented.
+- **Result (tokens saved % / bad % first 10 turns / bad % last 20 turns / plans below 0.45 %):**
+
+| world | policy | saved | first 10 | last 20 | plans < 0.45 |
+|---|---|---|---|---|---|
+| pattern holds | strength 1.0, min_keep 0.1 | 36.7 | 12.2 | 3.2 | 25.9% |
+| | strength 1.0, min_keep 0.3 | 36.7 | 12.2 | 3.3 | 25.7% |
+| | strength 1.0, min_keep 0.45 | 36.0 | 11.3 | 2.6 | 0.0% |
+| | strength 1.0, min_keep 0.6 | 31.2 | 7.5 | 2.4 | 0.0% |
+| | adaptive trust, min_keep 0.1 | 34.0 | 11.3 | 3.6 | 8.1% |
+| | adaptive trust, min_keep 0.45 | 34.5 | 11.1 | 3.2 | 0.0% |
+| no pattern | strength 1.0, min_keep 0.1 | 33.3 | 18.6 | 3.8 | 20.1% |
+| | strength 1.0, min_keep 0.3 | 33.2 | 18.6 | 3.8 | 19.8% |
+| | strength 1.0, min_keep 0.45 | 32.8 | 18.3 | 3.5 | 0.0% |
+| | strength 1.0, min_keep 0.6 | 29.3 | 13.4 | 3.2 | 0.0% |
+| | adaptive trust, min_keep 0.1 | 32.0 | 13.7 | 4.0 | 3.3% |
+| | adaptive trust, min_keep 0.45 | 31.5 | 13.4 | 3.6 | 0.0% |
+| pattern backwards | strength 1.0, min_keep 0.1 | 29.1 | 25.8 | 4.5 | 10.3% |
+| | strength 1.0, min_keep 0.3 | 29.0 | 25.8 | 4.2 | 10.4% |
+| | strength 1.0, min_keep 0.45 | 29.0 | 26.0 | 4.5 | 0.0% |
+| | strength 1.0, min_keep 0.6 | 27.5 | 19.0 | 4.3 | 0.0% |
+| | adaptive trust, min_keep 0.1 | 30.0 | 14.9 | 3.9 | 1.6% |
+| | adaptive trust, min_keep 0.45 | 30.0 | 14.6 | 4.2 | 0.0% |
+
+- **Takeaways:** without a floor, full-trust FCCL plans below the 0.45 knee in 10% to 26% of compressions (adaptive trust: 2% to 8%). A floor of 0.45 costs at most about 0.7 points of savings and slightly lowers bad reactions in two of three worlds. A floor of 0.3 has almost no effect. A floor of 0.6 trades about 5 points of savings for 5 to 7 fewer points of early bad reactions.
+- **Decision:** code default stays `min_keep=0.1` so earlier simulation results stay reproducible; use `min_keep=0.45` with real compressors (`demo_pipeline.py` does).
+- **Caveats:** the simulation shows the cost of the floor, not that 0.45 is right; that number comes from three texts judged by one model (E13, E14). Differences of about 0.5 point are noise.
+- **Files:** `fccl.py` (`min_keep`), `floor_sim.py`.

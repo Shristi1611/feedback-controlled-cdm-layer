@@ -1,13 +1,14 @@
 """End-to-end demo: Laya -> FCCL plan -> CDM -> measured result.
 
-  python demo_pipeline.py          uses the real ScaleDown API (about 1,000 free tokens in total)
-  python demo_pipeline.py local    uses the free local SimpleCDM instead (no key, no tokens)
+  python demo_pipeline.py          real ScaleDown API (about 500 free tokens per compressed case)
+  python demo_pipeline.py lingua   LLMLingua-2 on the CPU (free, needs about 1-2 GB of free RAM)
+  python demo_pipeline.py local    the free local SimpleCDM (no key, no model)
 """
 import sys
 
 from fccl import FCCL, Request, Feedback
 from laya_context import LayaContext
-from cdm import ScaleDownCDM, SimpleCDM, apply_plan
+from cdm import ScaleDownCDM, LLMLinguaCDM, SimpleCDM, apply_plan
 
 CONTEXT = """
 Hi, I wanted to check on the order I placed last week. The invoice number is 4821 and it was supposed to
@@ -36,14 +37,19 @@ CASES = [
     ("short context", None),     # a tiny context: FCCL should skip compression entirely
 ]
 
-local = len(sys.argv) > 1 and sys.argv[1] == "local"
-cdm = SimpleCDM() if local else ScaleDownCDM()
+mode = sys.argv[1] if len(sys.argv) > 1 else "scaledown"
+if mode == "local":
+    cdm, name = SimpleCDM(), "SimpleCDM (local word-dropper)"
+elif mode == "lingua":
+    cdm, name = LLMLinguaCDM(), "LLMLingua-2 (CPU)"
+else:
+    cdm, name = ScaleDownCDM(), "ScaleDown API"
 detector = LayaContext()
-layer = FCCL(context_fn=detector, seed=0)
-print("backend:", "SimpleCDM (local)" if local else "ScaleDown API")
+layer = FCCL(context_fn=detector, seed=0, min_keep=0.45)
+print("backend:", name)
 
-for name, message in CASES:
-    print(f"\n=========== {name} ===========")
+for case, message in CASES:
+    print(f"\n=========== {case} ===========")
     if message is None:
         message, context = "What's my balance?", "Balance is 40 dollars."
     else:
@@ -59,5 +65,5 @@ for name, message in CASES:
     print(f"result:    kept {res.kept_words:.0%} of words, {kt} of tokens (backend-reported); "
           f"fell back={res.fell_back} ({res.reason})")
     shown = res.text.replace("\n", " ")
-    print(f"text:      {shown[:240]}{'...' if len(shown) > 240 else ''}")
+    print(f"text:      {shown[:300]}{'...' if len(shown) > 300 else ''}")
     layer.feedback(Feedback("demo-user", "none"))

@@ -69,7 +69,10 @@ class FCCL:
     def __init__(self, min_tokens=500, explore_prob=0.1, explore_step=0.1,
                  floor=0.3, warmup=3, seed=0, use_context=True, learn=True, ctx_strength=1.0,
                  adaptive_trust=False, trust_arms=(0.0, 0.25, 0.5, 1.0), trust_eps=0.15, trust_penalty=1.0,
-                 context_fn=None):
+                 context_fn=None, min_keep=0.1):
+        self.min_keep = min_keep           # hard minimum fraction of text to keep, for EVERY plan.
+                                           # 0.1 = the old behaviour. Blind tests suggested quality drops
+                                           # noticeably below about 0.45 (three texts, so a tentative number).
         self.context_fn = context_fn       # optional: a function text -> context weight (0 to 1),
                                            # e.g. LayaContext(). None = use the keyword rule.
         self.ctx_strength = ctx_strength   # 0 = ignore conversation type, 1 = trust the keyword rule fully
@@ -131,10 +134,11 @@ class FCCL:
         if self.use_context:               # shrink the context guess toward neutral (0.5)
             c = 0.5 + strength * (self.context_weight(req.text) - 0.5)
         w = self.sat_weight.get(req.user_id, 1.0)
-        keep = min(1.0, max(0.1, 1.0 - 0.7 * c * w))
+        keep = min(1.0, max(self.min_keep, 1.0 - 0.7 * c * w))     # never below min_keep
         explored = False
-        # Safe experimenting: past warm-up, user not unhappy, and stays above the floor.
-        if (self.learn and n >= self.warmup and w >= 0.8 and keep - self.explore_step >= self.floor
+        # Safe experimenting: past warm-up, user not unhappy, and stays above both floors.
+        if (self.learn and n >= self.warmup and w >= 0.8
+                and keep - self.explore_step >= max(self.floor, self.min_keep)
                 and self.rng.random() < self.explore_prob):
             keep -= self.explore_step
             explored = True
