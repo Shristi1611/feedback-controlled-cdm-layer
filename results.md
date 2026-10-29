@@ -313,3 +313,26 @@ Findings:
 - LLMLingua-2 is not clearly better than SimpleCDM at keep 0.6 (88.3 vs 91.7, within noise).
 - Caveats: SQuAD is single-fact lookup, close to a worst case for compression; n=60; one answerer model; judge is an LLM.
 Decision: demo min_keep 0.45 -> 0.6. Next: rebuild the simulation on this measured curve.
+
+Paired analysis (paired_analysis.py, same 60 questions, exact sign test + bootstrap):
+| method | keep | lost | gained | diff (points) | 95% interval | p |
+|---|---|---|---|---|---|---|
+| LLMLingua-2 | 0.8 | 1 | 1 | +0.0 | [-5.0, +5.0] | 1.000 |
+| LLMLingua-2 | 0.6 | 5 | 0 | -8.3 | [-15.0, -1.7] | 0.062 |
+| LLMLingua-2 | 0.45 | 11 | 0 | -18.3 | [-28.3, -8.3] | 0.001 |
+| LLMLingua-2 | 0.3 | 27 | 0 | -45.0 | [-58.3, -33.3] | 0.000 |
+| SimpleCDM | 0.6 | 5 | 2 | -5.0 | [-13.3, +3.3] | 0.453 |
+| SimpleCDM | 0.45 | 12 | 0 | -20.0 | [-30.0, -10.0] | 0.000 |
+Reading: 0.8 is free; 0.6 is a likely small loss (borderline); 0.45 and below clearly hurt. Compression never helped.
+LLMLingua-2 vs SimpleCDM at 0.6 cannot be separated with n=60.
+Decision: default max compression keep 0.8; min_keep 0.6 as the lowest allowed; 0.45 knee rejected.
+
+## E19 - PRISM: does per-user learning of length preference beat a global rule? (2026-10-29)
+Setup: PRISM utterances (1389 users, 1-100 ratings of ~4 model responses per turn). Online, per user, using only earlier turns,
+predict which response in a turn is rated higher from response length alone (log words). Script: prism_length_test.py.
+Result (pairwise accuracy, 50% = chance): global rule 59.2%; user-only 55.8% (-3.4, CI [-4.1,-2.7]);
+blends k=1/3/10/30/100: 56.9/58.0/59.1/59.2/59.2. User-only learning curve rises 53.6 -> 57.1% from 2-3 to 11+ turns, never reaches global.
+81% of users rate longer answers higher; odd-vs-even-turn stability of a user's preference r = +0.12.
+Finding: per-user length adaptation does not beat a global prior at ~12 turns/user; personal preference is weak.
+Caveats: length is confounded with model quality (different models per turn); one crude feature; no prompt-type or stated-preference features; about output length, not input compression.
+Implication: do not claim per-user adaptation helps; keep a strong global prior; feedback-driven settings will lean toward less compression.
