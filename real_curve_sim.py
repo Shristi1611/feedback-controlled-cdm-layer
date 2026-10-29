@@ -101,8 +101,8 @@ if __name__ == "__main__":
         "fixed keep 0.6": lambda s: FixedRate(0.6),
         "fixed keep 0.45": lambda s: FixedRate(0.45),
         "fixed keep 0.3": lambda s: FixedRate(0.3),
-        "FCCL strength 0.0": lambda s: FCCL(seed=s, ctx_strength=0.0),
-        "FCCL strength 1.0": lambda s: FCCL(seed=s, ctx_strength=1.0),
+        "FCCL strength 0.0": lambda s: FCCL(seed=s, ctx_strength=0.0, min_keep=0.1),
+        "FCCL strength 1.0": lambda s: FCCL(seed=s, ctx_strength=1.0, min_keep=0.1),
         "FCCL strength 1.0, min_keep 0.45": lambda s: FCCL(seed=s, ctx_strength=1.0, min_keep=0.45),
         "FCCL adaptive, min_keep 0.45": lambda s: FCCL(seed=s, adaptive_trust=True, min_keep=0.45),
     }
