@@ -184,3 +184,34 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 - **Caveats:**
 - **Files:**
 ```
+
+
+---
+
+## Later experiments (append new entries here)
+
+### E14. Blinded quality test on two more texts
+- **Question:** do the E13 findings hold on texts of a different kind?
+- **Setup:** text B (technical help request, 278 words) and text C (long casual vent, 289 words); LLMLingua-2 and SimpleCDM at keep 0.6, 0.44, 0.3 (raw output, guard bypassed), plus originals; 14 shuffled samples; same blind method as E13 (answerer and grader are the same model, ground truth available when grading). Six questions per text. Text B: setup and versions; symptom and frequency; query time normal vs failing; the three fixes tried and what each did; when failures happen; the four things asked. Text C: flatmate and landlord threat; Meera (what, when, how found out); presentation and laptop; mum and the Diwali dates; the run; the two questions asked.
+- **Result (score out of 6; words kept in brackets):**
+
+| keep | method | text A (E13) | text B | text C | mean |
+|---|---|---|---|---|---|
+| 1.0 | original | 6.0 | 6.0 | 6.0 | 6.0 |
+| 0.6 | LLMLingua-2 | 6.0 (209) | 5.65 (183) | 6.0 (161) | 5.9 |
+| 0.6 | SimpleCDM | 6.0 (217) | 5.85 (167) | 6.0 (173) | 5.95 |
+| 0.44 | LLMLingua-2 | 5.75 (153) | 5.55 (132) | 5.8 (112) | 5.7 |
+| 0.44 | SimpleCDM | 5.4 (159) | 5.35 (122) | 5.4 (127) | 5.4 |
+| 0.3 | LLMLingua-2 | 5.1 (103) | 4.1 (87) | 4.5 (70) | 4.6 |
+| 0.3 | SimpleCDM | 4.6 (109) | 4.2 (83) | 4.7 (87, guard rejected) | 4.5 |
+
+- **Takeaways:** a knee near keep 0.44: about 40% fewer words is near-lossless on all three texts; the cost is small at 0.44 and about 1.5 points at 0.3. Details lost first are relations (what a fix did, who did what to whom, why) and, for SimpleCDM, dates written like "12th". The two local methods are within noise of each other (differences of 0.5 or less, direction flips between texts).
+- **Guard results:** all samples passed except SimpleCDM on text C at 0.3, which lost `12th`, `14th`, `29th`, `31st` (its rule protects only pure digits). LLMLingua-2 kept them because they were passed as forced tokens.
+- **Actual kept fraction vs requested (LLMLingua-2):** text B 66% / 47% / 31% for requests of 0.6 / 0.44 / 0.3; text C 56% / 39% / 24%. SimpleCDM tracked the request exactly.
+- **Implication (tentative):** FCCL's plan (`keep = 1 - 0.7 * context weight * satisfaction weight`, clamped at 0.1) can go far below the knee for a user whose satisfaction weight has grown. A hard minimum keep (around 0.45) is worth testing.
+- **Caveats:** three texts; answerer and judge are one model; questions reward keeping keywords, which flatters a simple word-dropper; reading short telegraphic text lets the judge reconstruct meaning from context; the toy matching LLMLingua-2 suggests the test is not discriminating enough to rank compressors.
+- **Files:** `make_blind_samples2.py` (outputs `blind_samples2.txt` and `blind_key2.txt`, not committed).
+
+### Fix log
+- 2026-10-29: `extract_preserve` no longer protects sentence-initial capitalised words (commit 43e8fcc). Verified: "Where is order 4821 ... Friday" gives `['4821', 'Friday']`, "Ugh I feel so stressed ..." gives `[]`. The simulation output is unchanged. Trade-off: a name that opens a sentence is not protected.
+- SimpleCDM weakness found: only pure digits count as IDs, so "12th" and "29th" are dropped at high compression. The guard catches this.
