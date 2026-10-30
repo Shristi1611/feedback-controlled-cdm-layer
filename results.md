@@ -355,3 +355,22 @@ Chat-style dialogue did NOT tolerate more compression than SQuAD. Pooling E18 an
 Compression never improved an answer. SimpleCDM >= LLMLingua-2 at keep 0.6 on both datasets (within noise).
 Caveats: n=47; the 0.3 row is damped by the 3-choice floor; DREAM dialogues are short and dense, not redundant; genuinely filler-heavy or venting text untested; one answerer model.
 Decision: keep 0.8 as the no-cost level and 0.6 as the lowest allowed; no change to min_keep recommendation.
+
+## E22 - Real MultiWOZ 2.2 booking conversations, generative LLM answerer (2026-10-30)
+Setup: MultiWOZ 2.2 validation (1000 conversations with usable questions). 60 questions, 30 whose answer is stated once and 30 stated 2+ times.
+Question templated from human-annotated final slot values (e.g. restaurant area); word answers only (numeric and yes/no excluded; guard protects number-like tokens by design).
+Answerer openai/gpt-oss-20b, exact-match scoring (centre/center accepted). Speaker labels protected. Script: real_multiwoz_llm_test.py.
+| method | keep | words kept % | guard fell back % | unknown % | correct % (95% margin) | paired change vs original |
+|---|---|---|---|---|---|---|
+| no dialogue | 0.0 | 0 | 0 | 100 | 0.0 | |
+| original | 1.0 | 100 | 0 | 3 | 95.0 +-5.5 | |
+| LLMLingua-2 | 0.8 | 86 | 0 | 5 | 91.7 +-7.0 | -3.3 (2 lost, 0 gained, p=0.500) |
+| LLMLingua-2 | 0.6 | 63 | 0 | 8 | 86.7 +-8.6 | -8.3 (5/0, p=0.062) |
+| LLMLingua-2 | 0.45 | 45 | 0 | 10 | 75.0 +-11.0 | -20.0 (12/0, p<0.001) |
+| SimpleCDM | 0.6 | 60 | 0 | 7 | 81.7 +-9.8 | -13.3 (8/0, p=0.008) |
+Repetition (LLMLingua-2 change, answer stated once vs 2+ times): 0.8: -3.3 / -3.3; 0.6: -13.3 / -3.3; 0.45: -23.3 / -16.7. SimpleCDM 0.6: -16.7 / -10.0.
+Direction consistent in every row, but 30 questions per group: not significant (p around 0.4 at 0.6).
+Findings: same curve as SQuAD (E18) and DREAM (E21): keep 0.6 about -8 points on all three; 0.45 about -18 to -23. Compression never helped (0 gained everywhere).
+Informal pooling E18+E21+E22 (LLMLingua-2): keep 0.8: 4 lost, 1 gained; 0.6: 14 lost, 0 gained; 0.45: 34 lost, 0 gained.
+Filler/repetition did not make logistics-style text safe to compress hard. FCCL's own plan for logistics (context weight 0.8, keep about 0.44) corresponds to about -20 points here, so min_keep=0.6 does real work.
+Caveats: n=60, one answerer, templated questions, strict scoring, numeric answers excluded, venting-style text still untested.
