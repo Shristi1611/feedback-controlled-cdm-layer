@@ -406,3 +406,15 @@ Free text: 185 users mention brevity (mean slope +12.81 vs +10.91 for others); 5
 Finding: nothing in the survey predicts length preference. The p=0.04 on stated preferences is likely chance (5 groups tested) and explains under 1% of variance.
 Together with E19/E20: on PRISM, for answer length, a strong global default beats per-user learning (about 12 turns each) and survey-based guesses.
 Caveats: length only; about 12 turns per user (about 21% of slope variance is stable trait at that length, so longer histories could make per-user learning worthwhile, untested); about output length, not compression.
+
+## E25 - PRISM multi-feature test: do people differ on things other than length? (2026-10-31)
+Script: prism_multi_test.py. 1396 users (1390 in the online test). Seven response features: length (log words), bullet list, disclaimer/refusal, hedging density, asks a question, bold/headings, word complexity.
+Part 1 (global weight in score points per SD of the within-turn feature / share of users leaning positive / odd-vs-even stability r):
+length +5.60 / 81% / +0.15; bullet list +0.92 / 70% / +0.06; disclaimer/refusal -1.35 / 47% / +0.06; hedging +0.51 / 61% / +0.01;
+asks a question -1.05 / 44% / +0.05; bold/headings -0.57 / 47% / +0.05; word complexity +2.08 / 77% / +0.04.
+Part 2 (online, pairwise accuracy; global 60.3%): user-only k=1/3/10: 55.5/55.7/55.9 (-4.8/-4.6/-4.4, all intervals below 0);
+blend k=3/10/30/100/300: 57.2/58.2/59.5/60.4/60.4 (-3.1/-2.1/-0.8/+0.1/+0.1; k=100 interval [-0.2, +0.4]).
+Learning curve: user-only rises from about 52% (2-3 turns) to about 57% (11+); global about 60% throughout.
+Finding: no feature shows a stable personal lean (stability 0.01-0.06 except length 0.15); per-user learning does not beat the global rule with seven features; blending only recovers the global level.
+With E19, E20 and E24: four real-data tests of per-user adaptation at about 12 turns per user, all negative.
+Caveats: about 12 turns per user (longer histories untested); rare binary features give few examples per user, so low stability is partly measurement noise; PRISM is about answer preferences, not compression; lexical features only.
