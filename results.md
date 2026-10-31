@@ -374,3 +374,23 @@ Findings: same curve as SQuAD (E18) and DREAM (E21): keep 0.6 about -8 points on
 Informal pooling E18+E21+E22 (LLMLingua-2): keep 0.8: 4 lost, 1 gained; 0.6: 14 lost, 0 gained; 0.45: 34 lost, 0 gained.
 Filler/repetition did not make logistics-style text safe to compress hard. FCCL's own plan for logistics (context weight 0.8, keep about 0.44) corresponds to about -20 points here, so min_keep=0.6 does real work.
 Caveats: n=60, one answerer, templated questions, strict scoring, numeric answers excluded, venting-style text still untested.
+
+## E23 - Failure autopsy and retry-on-abstention cascade (2026-10-30, exploratory, post-hoc)
+Scripts: autopsy_multiwoz.py (no API calls), cascade_analysis.py (no API calls; reads squad_llm_cache.json and multiwoz_llm_cache.json).
+Autopsy (MultiWOZ, 60 questions, LLMLingua-2): the answer word survives in 59/60 compressed conversations at keep 0.6 and 57/60 at 0.45.
+Of 5 questions broken at 0.6: answer deleted in 0, present but answered wrong in 5. Of 12 broken at 0.45: deleted in 2, present but wrong in 10.
+Loss is damaged context (wrong binding of value to slot/option), not deleted tokens, so token protection cannot fix most failures.
+By who states the answer (broken/total): keep 0.6 customer-only 1/25, agent-only 4/10, both 0/22; keep 0.45 customer-only 6/25, agent-only 3/10, both 3/22. The agent speaks 55% of the words. Small post-hoc subgroups; hint only.
+Cascade: if the compressed-context answer is "unknown", retry with the original context. Cost counts context tokens only (compressed call = fraction kept; a retry adds 100%).
+Pooled (SQuAD 60 + MultiWOZ 61 questions; 61 = 60 plus one extra from the smoke run), LLMLingua-2, tokens used / accuracy change vs original (lost/gained):
+| keep | plain | cascade |
+|---|---|---|
+| 0.8 | 84% / -1.7 (3/1) | 87% / +0.0 (1/1) |
+| 0.6 | 60% / -8.3 (10/0) | 67% / -1.7 (2/0), p = 0.5 |
+| 0.45 | 43% / -19.0 (23/0) | 52% / -10.7 (13/0), p < 0.001 |
+SimpleCDM keep 0.6: plain 61% / -9.1 (13/2); cascade 65% / -5.0 (8/2).
+Per dataset at keep 0.6: SQuAD cascade -3.3 (2/0); MultiWOZ cascade +0.0 (0/0); confident wrong answers (retry cannot catch) SQuAD 2, MultiWOZ 0.
+At keep 0.45 the abstention rate barely rises (SQuAD 5% to 7%, MultiWOZ 8% to 10%) but confident wrong answers jump (pooled 2 to 13), so the cascade cannot rescue harsher compression and abstention rate is a poor dial for the level.
+Finding: keep 0.6 plus retry-on-abstention gives about 33% context savings at about -1.7 points, vs about 16% savings at -1.7 for plain keep 0.8.
+Caveats: discovered after looking at these results (needs replication on fresh questions); context tokens only (latency and the extra request ignored); needs a model that abstains (prompts told it to; DREAM multiple choice cannot); informal pooling; simulated from saved answers (temperature 0), not a live run.
+Decision: replicate on fresh, larger samples before claiming it; keep min_keep=0.6.
