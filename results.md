@@ -394,3 +394,15 @@ At keep 0.45 the abstention rate barely rises (SQuAD 5% to 7%, MultiWOZ 8% to 10
 Finding: keep 0.6 plus retry-on-abstention gives about 33% context savings at about -1.7 points, vs about 16% savings at -1.7 for plain keep 0.8.
 Caveats: discovered after looking at these results (needs replication on fresh questions); context tokens only (latency and the extra request ignored); needs a model that abstains (prompts told it to; DREAM multiple choice cannot); informal pooling; simulated from saved answers (temperature 0), not a live run.
 Decision: replicate on fresh, larger samples before claiming it; keep min_keep=0.6.
+
+## E24 - PRISM: does the survey predict a user's length preference? (2026-10-31)
+Script: prism_survey_test.py. 1367 users with 6+ rated turns. Target = each user's own length slope (positive = rates longer answers higher).
+Reliability: odd/even-turn correlation of the slope +0.12 (full-length reliability about 0.21), so the ceiling for any predictor's correlation with the observed slope is about 0.46.
+Out-of-sample (5-fold over users, weighted ridge), correlation with observed slope (lambda 10/100/1000): stated preferences +0.079/+0.081/+0.089 (permutation p 0.040 at lambda 100);
+AI usage +0.018/+0.016/+0.003 (p 0.597); free text brief/detail +0.032/+0.031/+0.026 (p 0.493); demographics (reference only) +0.012/+0.018/+0.019 (p 0.612); all except demographics +0.063/+0.064/+0.064 (p 0.065).
+Top-vs-bottom 20% gap in observed slope: +1.47 (stated prefs), +0.72, +1.61, -0.62, +2.02, against a typical slope of about +11.7.
+Pairwise accuracy vs the global rule: +0.0 [+0.0, +0.0] for every group (degenerate: predicted slopes stay positive for nearly everyone, so the ordering never changes).
+Free text: 185 users mention brevity (mean slope +12.81 vs +10.91 for others); 57 mention detail (+13.21 vs +11.08). Stated wish for brevity does not show up as a lower slope (difference not tested).
+Finding: nothing in the survey predicts length preference. The p=0.04 on stated preferences is likely chance (5 groups tested) and explains under 1% of variance.
+Together with E19/E20: on PRISM, for answer length, a strong global default beats per-user learning (about 12 turns each) and survey-based guesses.
+Caveats: length only; about 12 turns per user (about 21% of slope variance is stable trait at that length, so longer histories could make per-user learning worthwhile, untested); about output length, not compression.
