@@ -154,6 +154,9 @@ Add new entries at the bottom of "Experiments" and update the other sections as 
 - `ScaleDownCDM.min_removal = 0.5`, from E7 (below that the output was longer).
 - Laya runs as `context_fn`, with the keyword rule kept as the default so the simulations stay reproducible.
 - LLMLingua-2 was dropped once (out of memory) and retried after a restart; it needs `device_map="cpu"` with a CPU-only PyTorch.
+- `FCCL` default `min_keep` is now 0.6 (E18, E21, E22: quality falls sharply below it; E26: the retry net stops working at 0.45). The simulations pin `min_keep` explicitly so their results stay reproducible.
+- Retry-on-unknown (`cdm.answer_with_retry`) is the way to run keep 0.6: it replicated on 200 fresh questions (E26). The prompt must tell the model to say "unknown", and the model's abstention is fed back to FCCL as the automatic `"abstained"` feedback (a milder back-off than a user complaint).
+- Per-user adaptation: four real-data tests at about 12 turns per user (E19, E20, E24, E25) all favour a strong global default, so FCCL keeps a global default and treats per-user learning as unproven rather than dropped.
 
 ## Open bugs and weaknesses
 - `extract_preserve` protects capitalised sentence-starting words (for example "Where", "Ugh"), causing needless fallbacks (E12, E13).
@@ -161,7 +164,9 @@ Add new entries at the bottom of "Experiments" and update the other sections as 
 - The simulations assume the requested rate is honoured exactly; ScaleDown does not do this.
 - One shared trust level for all users in adaptive trust.
 - Laya's confidence is uncalibrated and unused.
-- All compressor results come from one text; they need at least a second and third text of a different kind.
+- Real-data results come from one answerer model (gpt-oss-20b) and an LLM judge; other models, and venting-style text, are untested.
+- The retry net needs a model that says "unknown"; it fails at keep 0.45 and below, and multiple-choice tasks cannot use it.
+- Per-user adaptation is untested for long histories (more than about 12 turns), compression-specific preferences, and other populations.
 
 ## Environment notes (Windows laptop, about 6 GB RAM in use at peak)
 - Python 3.12 in a `.venv` created from Anaconda; `python` and `pip` resolve to the venv first.
@@ -245,6 +250,7 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 
 - **Takeaways:** without a floor, full-trust FCCL plans below the 0.45 knee in 10% to 26% of compressions (adaptive trust: 2% to 8%). A floor of 0.45 costs at most about 0.7 points of savings and slightly lowers bad reactions in two of three worlds. A floor of 0.3 has almost no effect. A floor of 0.6 trades about 5 points of savings for 5 to 7 fewer points of early bad reactions.
 - **Decision:** code default stays `min_keep=0.1` so earlier simulation results stay reproducible; use `min_keep=0.45` with real compressors (`demo_pipeline.py` does).
+- **Update (2026-11-02):** superseded by E18 to E26. The code default is now 0.6, the simulations pin `min_keep` explicitly, and the 0.45 floor has no measured knee behind it.
 - **Caveats:** the simulation shows the cost of the floor, not that 0.45 is right; that number comes from three texts judged by one model (E13, E14). Differences of about 0.5 point are noise.
 - **Files:** `fccl.py` (`min_keep`), `floor_sim.py`.
 
@@ -337,6 +343,16 @@ Finding: per-user length adaptation does not beat a global prior at ~12 turns/us
 Caveats: length is confounded with model quality (different models per turn); one crude feature; no prompt-type or stated-preference features; about output length, not input compression.
 Implication: do not claim per-user adaptation helps; keep a strong global prior; feedback-driven settings will lean toward less compression.
 
+## E20 - PRISM controls: model identity and conversation type (2026-10-29)
+Script: prism_control_test.py. Same online per-user test as E19, with controls.
+- Model-adjusted score: global 57.6%, user-only 54.7% (-3.0, CI [-3.7,-2.1]); blends k=10/30: -0.4/+0.1. Stability r=+0.11.
+- Model-adjusted score and length: global 56.4%, user-only 53.6% (-2.8); stability r=+0.10.
+- Global length slope falls from +11.7 to +5.9 after removing model quality: part of "longer is better" was model quality.
+- Model identity alone orders 59.2% of pairs correctly, equal to length alone (~59%).
+- By conversation type, slope +12.8 (controversy), +10.2 (unguided), +12.5 (values); longer-wins accuracy 60.8/58.3/59.2%. No strong context effect.
+Finding: E19 holds after controlling for model quality; no hidden stable personal length preference (r about 0.1); no strong context dependence by conversation type.
+Caveats: accuracies not comparable across variants; PRISM conversation types are not chatty/logistics; stated preferences and non-length features untested.
+
 ## E21 - Real DREAM dialogues, generative LLM answerer (2026-10-29, partial: 47 of 100 planned)
 Setup: DREAM validation, dialogues of 100+ words (921 eligible), 47 questions of a fixed random sample (seed 0; run stopped by Groq free rate limit).
 Answerer openai/gpt-oss-20b, multiple choice (3 options, shuffled), exact scoring, no judge. Speaker labels rewritten (Man/Woman) and protected. Script: real_dream_llm_test.py.
@@ -424,4 +440,5 @@ Script: replicate_cascade.py. 100 fresh SQuAD + 100 fresh MultiWOZ questions, no
 Pooled (change vs original, lost/gained, tokens %): LLMLingua-2 0.8 plain +0.5 (8/9) 84%, cascade +2.0 (5/9) 89%; 0.6 plain -4.5 (21/12) 60%, cascade -1.0 (14/12) 67% p=0.845; 0.45 plain -16.0 (41/9) 43%, cascade -8.5 (26/9) 55% p=0.006.
 Result: PASS. Cascade at 0.6: -1.0 points (95% interval [-6.0, +4.0]) at 67% of tokens. Retried 7% of questions.
 Finding: retry-on-abstention replicates. It recovers most of the plain-0.6 loss. It still fails at 0.45 (26 confident wrong answers).
-Caveats: wide interval; one answerer model; needs a model that abstains; judge is an LLM.
+Caveats: wide interval (a real loss of 4 to 5 points is not ruled out); one answerer model; needs a model that abstains; judge is an LLM.
+Decision: wired into the code on 2026-11-02: `cdm.answer_with_retry` (retry on "unknown"), the automatic `"abstained"` feedback in `fccl.py`, and the `min_keep` default raised to 0.6. Offline wiring test: `test_cascade_wiring.py` (no live model run yet).
