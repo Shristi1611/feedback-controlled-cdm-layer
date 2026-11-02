@@ -4,3 +4,16 @@ __pycache__/
 .vscode/
 laya_results.txt
 compare_results.txt
+blind_samples.txt
+blind_key.txt
+blind_*.txt
+squad_results.txt
+squad_llm_cache.json
+squad_llm_results.txt
+paired_results.txt
+prism_control_results.txt
+dream_llm_cache.json
+dream_llm_results.txt
+multiwoz_llm_cache.json 
+multiwoz_llm_results.txt
+qaware_results.txt
