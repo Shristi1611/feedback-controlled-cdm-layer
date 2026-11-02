@@ -418,3 +418,10 @@ Learning curve: user-only rises from about 52% (2-3 turns) to about 57% (11+); g
 Finding: no feature shows a stable personal lean (stability 0.01-0.06 except length 0.15); per-user learning does not beat the global rule with seven features; blending only recovers the global level.
 With E19, E20 and E24: four real-data tests of per-user adaptation at about 12 turns per user, all negative.
 Caveats: about 12 turns per user (longer histories untested); rare binary features give few examples per user, so low stability is partly measurement noise; PRISM is about answer preferences, not compression; lexical features only.
+
+## E26 - Replication of the retry-on-unknown cascade on fresh questions (2026-11-02)
+Script: replicate_cascade.py. 100 fresh SQuAD + 100 fresh MultiWOZ questions, none used earlier. Answerer gpt-oss-20b, judge gpt-oss-120b. Pre-registered: cascade at keep 0.6 loses <= 3 points at <= 72% of tokens (pooled).
+Pooled (change vs original, lost/gained, tokens %): LLMLingua-2 0.8 plain +0.5 (8/9) 84%, cascade +2.0 (5/9) 89%; 0.6 plain -4.5 (21/12) 60%, cascade -1.0 (14/12) 67% p=0.845; 0.45 plain -16.0 (41/9) 43%, cascade -8.5 (26/9) 55% p=0.006.
+Result: PASS. Cascade at 0.6: -1.0 points (95% interval [-6.0, +4.0]) at 67% of tokens. Retried 7% of questions.
+Finding: retry-on-abstention replicates. It recovers most of the plain-0.6 loss. It still fails at 0.45 (26 confident wrong answers).
+Caveats: wide interval; one answerer model; needs a model that abstains; judge is an LLM.
