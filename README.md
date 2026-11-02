@@ -2,7 +2,7 @@
 
 A feedback-driven layer between users and CDMs that decides when and how hard to compress, without hurting answer quality.
 
-**Status:** working prototype with a measured safe range. The guarded compression pipeline works, and its quality cost has been measured on real data (real SQuAD questions, real DREAM dialogues and real MultiWOZ booking conversations, a real generative LLM, real compressors). The two ideas that made the project distinctive, learning per user and weighting by conversation context, have **not** been supported by real data so far: a real-data test of per-user length adaptation (PRISM) found it did not beat a single global rule. The learning results in the simulation sections below use *invented* users, so they show that the mechanism works, not that it helps real people. The full experiment log is in [`results.md`](results.md).
+**Status:** working prototype with a measured safe range. The guarded compression pipeline works, and its quality cost has been measured on real data (real SQuAD questions, real DREAM dialogues and real MultiWOZ booking conversations, a real generative LLM, real compressors). A **retry-on-unknown net** (answer from the compressed text; if the model says "unknown", answer again from the original) replicated on 200 fresh questions: keep 0.6 with the retry lost about 1 point at about 67% of the tokens (E26). The two ideas that made the project distinctive, learning per user and weighting by conversation context, have **not** been supported by real data so far: four real-data PRISM tests (answer length, controls, survey answers, seven response features) found that a single global rule beat per-user learning at about 12 turns per user. Longer histories, compression-specific preferences and other populations are untested. The learning results in the simulation sections below use *invented* users, so they show that the mechanism works, not that it helps real people. The full experiment log is in [`results.md`](results.md).
 
 ## What real data says (read this first)
 
@@ -11,11 +11,13 @@ A feedback-driven layer between users and CDMs that decides when and how hard to
 | Guarded compression at a mild rate is safe | keep 0.8 shows no detectable loss on SQuAD (E18) and DREAM dialogues (E21), and at most about 3 points on MultiWOZ (E22) | supported, on the three kinds of task tested |
 | Compression below about 0.6 is cheap | keep 0.6 costs about 8 points, 0.45 about 18 to 23, on three different tasks (SQuAD, DREAM dialogues, MultiWOZ booking conversations); there is **no knee at 0.45** and filler or repetition did not change that (E17, E18, E21, E22) | rejected |
 | The guard is worth having | at nominal keep 0.45 it caught 18% of cases the naive compressor would have damaged (E18) | supported |
-| Learning each user's preference beats a global rule | PRISM, 1,389 users: global rule 59.2% vs per-user learning 55.8% pairwise accuracy; held after controlling for the model (E19, E20) | not supported (answer length only) |
+| Retry on "unknown" makes keep 0.6 nearly free | 200 fresh questions, pre-registered: -1.0 point (95% interval [-6.0, +4.0]) at 67% of the tokens, against -4.5 at 60% without the retry; it fails at 0.45 (E23, E26) | supported, with a wide interval and one answerer model |
+| Learning each user's preference beats a global rule | PRISM, about 1,390 users: global rule 59.2% to 60.3% vs per-user learning 55.5% to 55.9% pairwise accuracy; held after controlling for the model, and with seven response features (E19, E20, E25) | not supported at about 12 turns per user |
+| A user's survey answers predict their preference | out-of-sample correlation 0.00 to 0.09 with their own length slope, against a ceiling of about 0.46 (E24) | not supported |
 | The context weight helps | one real check by conversation type found no strong effect; the logistics plan (keep about 0.44) cost about 20 points on real booking conversations; venting-style text untested on real data (E20, E22) | not supported, not yet fairly tested |
 | Laya labels conversation types better than keywords | 18/20 vs 8/20 on 20 messages I wrote and labelled | weak evidence |
 
-Recommended settings today: keep rate **0.8** costs little or nothing; **0.6** is the lowest I would allow (`min_keep=0.6`), and it costs a few points; keep the guard on.
+Recommended settings today: keep rate **0.8** costs little or nothing. **0.6** is the lowest I would allow (`min_keep=0.6`, now the default). On its own it costs about 4 to 8 points; with the retry-on-unknown net (`answer_with_retry`) it cost about 1 point on fresh questions. Keep the guard on.
 
 ## The idea
 
@@ -47,7 +49,7 @@ Each decision combines two weights and a safety limit on experimenting:
 - **Satisfaction weight:** one number per user, updated from reactions to the answer ("show more", correction, regenerate, thumbs). Unhappy users get compressed less. Reactions to the *answer* count, not general mood, so a user venting is not treated as dissatisfied.
 - **Careful experimenting:** the layer sometimes compresses a little harder for users who seem happy. It never experiments during a user's first few requests, never for unhappy users, and never below a floor. It remembers which plans were experiments, so a bad reaction can be traced back to the experiment and punished harder.
 - **Adaptive trust:** the layer keeps a score for each trust level (0, 0.25, 0.5, 1.0): text saved, minus a penalty for each bad reaction. It mostly uses the best-scoring level, tries a random one 15% of the time, and ties go to the lower (safer) level.
-- **Hard minimum (`min_keep`):** no plan ever keeps less than this fraction of the text. The default is 0.1 (the old behaviour, so earlier simulation results stay reproducible). Real quality tests (below) show little or no loss at 0.8, a likely small loss at 0.6 and a clear loss at 0.45 and below, so use `min_keep=0.6` with a real compressor.
+- **Hard minimum (`min_keep`):** no plan ever keeps less than this fraction of the text. The default is now 0.6. Real quality tests (below) show little or no loss at 0.8, a small loss at 0.6 (mostly recovered by the retry net) and a clear loss at 0.45 and below. The simulations pin `min_keep=0.1` explicitly, so their results stay reproducible.
 
 The plan it produces has three fields so far: `apply` (compress at all?), `rate` (fraction of the text to keep) and `preserve` (words that must survive: numbers, and capitalised words that are not at the start of a sentence).
 
@@ -60,6 +62,8 @@ Backends share one interface: `LLMLinguaCDM` (local, CPU), `ScaleDownCDM` (the r
 - it reports the *measured* kept fraction, because the requested rate is only approximately honoured.
 
 `ScaleDownCDM` skips the API call when the requested removal is below 50% (`min_removal`), because calibration showed it makes text longer there. `LLMLinguaCDM` passes the protected words to LLMLingua-2 as forced tokens.
+
+**Retry on "unknown" (`answer_with_retry`).** You give it your own `ask(text)` function. It compresses the context per the plan, asks, and if the answer is "unknown" asks again with the original text. It returns the answer, whether it retried, the cost (fraction of words sent; above 1.0 means the retry cost more than not compressing) and an `abstained` flag. Your prompt must include `ABSTAIN_INSTRUCTION` so the model says "unknown" instead of guessing. When `abstained` is true, send `Feedback(user_id, "abstained")` to the layer: it is an automatic, milder signal that the compression was too hard for this user. It does not work below keep 0.6 (the model gives confident wrong answers instead of "unknown"), which is why `min_keep` stays at 0.6.
 
 ## Real-data tests
 
@@ -144,7 +148,26 @@ Run it with `python real_dream_llm_test.py 100` (needs `GROQ_API_KEY`; resumable
 
 Run it with `python real_multiwoz_llm_test.py 60` (needs `GROQ_API_KEY`; resumable; stops cleanly at the free rate limit and reports on the questions finished).
 
-### Does learning each user's preference help? PRISM (E19, E20)
+### Why compressed text fails, and the retry net (E23, E26)
+
+**Autopsy (E23, MultiWOZ, 60 questions, LLMLingua-2).** The answer word survives compression in 59 of 60 conversations at keep 0.6 and 57 of 60 at 0.45. Of the 5 broken answers at 0.6, none had the answer deleted: all 5 had it present but bound to the wrong thing. So the loss is damaged context, not deleted words, and protecting more tokens cannot fix most failures. A partial test of question-aware turn selection (`qaware_multiwoz_test.py`, stopped at 28 of 60) did not help either; treat that as a hint, not a result.
+
+**Retry on "unknown" (E23 found it after looking at the data; E26 replicated it).** The prediction was written into `replicate_cascade.py` before it ran: on 200 fresh questions (100 SQuAD, 100 MultiWOZ, none used before), keep 0.6 with the retry loses at most 3 points at 72% of the tokens or less.
+
+| keep | plain: tokens / change (lost/gained) | with retry: tokens / change (lost/gained) | p | confident wrong answers |
+|---|---|---|---|---|
+| 0.8 | 84% / +0.5 (8/9) | 89% / +2.0 (5/9) | 0.424 | 5 |
+| 0.6 | 60% / -4.5 (21/12) | 67% / -1.0 (14/12) | 0.845 | 14 |
+| 0.45 | 43% / -16.0 (41/9) | 55% / -8.5 (26/9) | 0.006 | 26 |
+
+- **Prediction check: PASS.** Keep 0.6 with the retry: -1.0 point (95% interval [-6.0, +4.0]) at 67% of the tokens; 7% of questions were retried.
+- Compared with plain keep 0.8 (84% of the tokens), the retry at 0.6 saves about 17 more points of tokens for about 1.5 points of accuracy.
+- It fails at 0.45: confident wrong answers replace "unknown", so the retry never fires. That is the reason for the 0.6 floor.
+- Caveats: the interval is wide (a real loss of 4 to 5 points is not ruled out); one answerer model; it needs a model that says "unknown" (multiple-choice tasks like DREAM cannot use it); the judge is an LLM; the first look (E23) used saved answers and the replication a live run, with the same result.
+
+Run it with `python replicate_cascade.py squad 100`, then `python replicate_cascade.py multiwoz 100`, then `python replicate_cascade.py report` (needs `GROQ_API_KEY`; resumable). The wiring is checked offline by `python test_cascade_wiring.py`.
+
+### Does learning each user's preference help? PRISM (E19, E20, E24, E25)
 
 PRISM has 1,389 users who rated several model responses to the same prompt on a 1 to 100 scale (median 48 rated responses per user). For each user, in order, we predicted which response in a turn they rated higher from response length alone, using only that user's earlier turns. Accuracy is the share of within-turn response pairs ordered correctly (50% is chance).
 
@@ -158,9 +181,12 @@ PRISM has 1,389 users who rated several model responses to the same prompt on a 
 - 81% of users rate longer answers higher. A user's length preference is only weakly stable across their own turns (correlation about +0.12).
 - **Controls (E20).** Removing each model's average quality, and then also its usual length, did not change the conclusion: user-only learning stayed 2.8 to 3.0 points below global, and stability stayed at about +0.10. The global length slope halved (+11.7 to +5.9), so part of "longer is better" was model quality. Model identity alone predicts ratings as well as length does (59.2%).
 - **By conversation type** the length preference is about the same (slopes +10.2 to +12.8; "longer wins" accuracy 58.3% to 60.8%).
-- Caveats: this is one feature (length), a simple learner, about 12 turns per user, and about *output* length, not input compression. PRISM's conversation types are not FCCL's chatty and logistics contexts. Survey-stated preferences were not used.
+- **Survey answers (E24).** For 1,367 users, nothing in the survey (stated preferences, AI usage, free text, demographics) predicted a user's own length slope out of sample: correlations 0.00 to 0.09, against a ceiling of about 0.46 set by how noisy the slope is. The one nominal hit (stated preferences, p = 0.04) is probably chance among five groups tested and explains under 1% of the variance.
+- **Seven features (E25).** Length, bullet lists, disclaimers or refusals, hedging, asking a question back, bold or headings, and word complexity. People agree on direction (longer, more complex and more list-like answers rate higher; disclaimers, refusals and questions back rate lower). No feature shows a stable personal lean (odd-vs-even stability 0.01 to 0.06, except length at 0.15). Per-user learning scored 55.5% to 55.9% against 60.3% for the global rule; blending toward the global rule only recovers the global level (60.4%, +0.1, interval [-0.2, +0.4]). Rare yes/no features give few examples per user, so low stability there is partly measurement noise.
+- Together, four tests at about 12 turns per user all favour a strong global default. About 21% of the length-slope variance is a stable trait at that length, so longer histories are untested, not ruled out.
+- Caveats: about 12 turns per user, lexical features, and about *output* preferences, not input compression. PRISM's conversation types are not FCCL's chatty and logistics contexts.
 
-Run it with `python inspect_prism.py`, `python prism_length_test.py` and `python prism_control_test.py`.
+Run it with `python inspect_prism.py`, `python prism_length_test.py`, `python prism_control_test.py`, `python prism_survey_test.py` and `python prism_multi_test.py`.
 
 ## Results so far (simulated users)
 
@@ -328,14 +354,15 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 
 ## Limits
 
-- The learning results in the simulation sections use simulated users. I wrote their hidden tolerances and reactions, and the simulations assume the requested rate is honoured exactly. The first real test of per-user learning (PRISM, answer length) did not support it.
+- The learning results in the simulation sections use simulated users. I wrote their hidden tolerances and reactions, and the simulations assume the requested rate is honoured exactly. Four real tests of per-user learning (PRISM: length, controls, survey, seven features) did not support it at about 12 turns per user.
 - In the first test, 60% of the fake users follow the pattern the context rule assumes, so the context weight's benefit there is probably overstated. The stress test checks what happens when it is wrong.
 - Adaptive trust uses one trust level shared by all users, while real populations are mixed. The penalty for a bad reaction (1.0) is a number I chose, not a measured one.
 - The simulations use the keyword detector. Laya is wired in as an option but has not been run end to end inside the simulation or on real conversations.
 - The detector comparison is 20 messages that I wrote and labelled.
 - **The real quality curves come from three datasets, with one answerer model (`gpt-oss-20b`).** SQuAD is single-fact lookup (60 questions, close to a worst case for compression); DREAM is dialogue inference (47 questions, short and dense); MultiWOZ is booking conversations with natural filler and repetition (60 questions, templated from human annotations, numeric answers excluded, strict scoring). All three give nearly the same curve. Venting-style text is untested and might tolerate more compression. The 0.6 loss is borderline significant within each dataset and clear when they are pooled informally.
 - **The hand-judged blind tests were too lenient** (one model as both answerer and judge, with ground truth). Their "0.45 knee" is rejected and should not be relied on.
-- **PRISM tests output length, not input compression,** with one feature, a simple learner and about 12 turns per user. A negative result there does not rule out other kinds of per-user adaptation, other features, longer histories or survey-based starting guesses (untested).
+- **PRISM tests answer preferences, not input compression,** with simple learners, lexical features and about 12 turns per user. A negative result there does not rule out per-user adaptation on longer histories, on preferences about compression itself, or in other populations (all untested). Rare yes/no features have low measured stability partly because of noise.
+- **The retry net is one replication on one answerer model.** Its 95% interval at keep 0.6 is [-6.0, +4.0]. It needs a model that says "unknown", does not work at keep 0.45 or below, and the live wiring (`answer_with_retry`) has only been checked offline.
 - The guard checks protected words and length, not meaning: a compressed text can keep every protected word and still lose what the user needs.
 - LLMLingua-2 is query-agnostic (it ignores what the user asked), so it can keep irrelevant content and drop relevant content. Compression that uses the user's question has not been tested yet.
 - Laya needs about 1 GB of free RAM on top of `torch`, and LLMLingua-2 about the same. Both failed with out-of-memory errors on a laptop until other apps were closed and the machine was restarted.
@@ -352,7 +379,8 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 |---|---|
 | `fccl.py` | the layer: data types (`Request`, `CompressionPlan`, `Feedback`) and the `FCCL` class |
 | `laya_context.py` | `LayaContext`: uses Laya as the conversation-type detector (pass it as `context_fn`) |
-| `cdm.py` | CDM backends (`LLMLinguaCDM`, `ScaleDownCDM`, `SimpleCDM`) and `apply_plan` with the safety guard |
+| `cdm.py` | CDM backends (`LLMLinguaCDM`, `ScaleDownCDM`, `SimpleCDM`), `apply_plan` with the safety guard, and `answer_with_retry` (retry on "unknown") |
+| `test_cascade_wiring.py` | offline check of the retry wiring and the `"abstained"` feedback (no API calls) |
 | `fccl_sim.py` | tests FCCL against simulated users in three worlds |
 | `floor_sim.py` | the cost of a hard minimum keep (`min_keep`) in the simulation |
 | `real_curve_sim.py` | simulation using the hand-judged quality curve (that curve is now known to be too optimistic) |
@@ -367,7 +395,11 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 | `paired_analysis.py` | paired significance analysis of the SQuAD LLM results |
 | `inspect_dream.py`, `real_dream_llm_test.py` | DREAM dialogues: structure check, and the multiple-choice compression test (Groq, resumable) |
 | `inspect_multiwoz.py`, `real_multiwoz_llm_test.py` | MultiWOZ booking conversations: structure check, and the compression test with questions templated from human annotations (Groq, resumable) |
+| `autopsy_multiwoz.py`, `cascade_analysis.py` | why compressed answers fail (E23), and the retry net on saved answers (no API calls) |
+| `qaware_multiwoz_test.py` | question-aware turn selection on MultiWOZ (partial run, no benefit seen) |
+| `replicate_cascade.py` | the pre-registered replication of the retry net on fresh SQuAD and MultiWOZ questions (E26; Groq, resumable) |
 | `inspect_prism.py`, `prism_length_test.py`, `prism_control_test.py` | PRISM: structure, per-user length adaptation, model and conversation-type controls |
+| `prism_survey_test.py`, `prism_multi_test.py` | PRISM: do survey answers predict a user's length preference (E24); do users differ on seven response features (E25) |
 | `sim.py`, `policies.py`, `experiments.py` | the earlier answer-length study |
 | `results.md` | the full log of every experiment, with caveats |
 
@@ -402,6 +434,15 @@ python real_multiwoz_llm_test.py 60   # booking conversations; resumable
 python inspect_prism.py               # look at the PRISM data
 python prism_length_test.py           # per-user length adaptation vs a global rule
 python prism_control_test.py          # same, with model and conversation-type controls
+python prism_survey_test.py           # does the survey predict a user's length preference
+python prism_multi_test.py            # seven response features, per-user vs global
+
+python autopsy_multiwoz.py            # why compressed answers fail (no API calls)
+python cascade_analysis.py            # retry net on saved answers (no API calls)
+python replicate_cascade.py squad 100      # fresh-question replication; resumable
+python replicate_cascade.py multiwoz 100
+python replicate_cascade.py report         # tables and the PASS/FAIL check
+python test_cascade_wiring.py         # offline check of answer_with_retry and the abstained feedback
 ```
 
 To use the real ScaleDown API, get a key from ScaleDown and keep it in an environment variable, never in a file in the repo:
@@ -418,7 +459,19 @@ Use the pieces together:
 from fccl import FCCL
 from laya_context import LayaContext
 
-layer = FCCL(context_fn=LayaContext(), min_keep=0.6)
+layer = FCCL(context_fn=LayaContext())            # min_keep defaults to 0.6
+```
+
+With the retry net (your `ask` function must use `ABSTAIN_INSTRUCTION` in its prompt):
+
+```python
+from fccl import Request, Feedback
+from cdm import LLMLinguaCDM, answer_with_retry
+
+plan = layer.plan(Request(user_id, user_message, context_tokens))
+result = answer_with_retry(ask, LLMLinguaCDM(), context, plan, prompt=user_message)
+if result.abstained:                                # the model said "unknown" on the compressed text
+    layer.feedback(Feedback(user_id, "abstained"))   # mild automatic back-off for this user
 ```
 
 ## Roadmap
@@ -434,17 +487,21 @@ layer = FCCL(context_fn=LayaContext(), min_keep=0.6)
 - [x] First real-data test of per-user adaptation (PRISM, E19 and E20): not supported for answer length
 - [x] Test on dialogue context (DREAM, E21, partial): same curve as SQuAD
 - [x] Test filler-heavy booking conversations (MultiWOZ, E22): same curve as SQuAD and DREAM
-- [ ] Question-aware compression: keep the parts of the context most relevant to the user's prompt, and compare with the question-blind curve on the same questions
+- [~] Question-aware compression: keep the parts of the context most relevant to the user's prompt (partial MultiWOZ run, 28 of 60, showed no benefit; not conclusive)
 - [ ] Test venting-style text, and use more answerer models
-- [ ] Raise the default `min_keep` in `fccl.py` from 0.1 to a measured-safe value (0.6)
+- [x] Raise the default `min_keep` in `fccl.py` from 0.1 to a measured-safe value (0.6); the simulations pin 0.1
+- [x] Retry on "unknown" found (E23) and replicated on 200 fresh questions (E26); wired in as `answer_with_retry` and the `"abstained"` feedback
+- [ ] Run `answer_with_retry` live end to end (Groq or another model) and measure the real saving, including the extra request and latency
+- [ ] Test the retry net with more answerer models (it needs a model that says "unknown")
 - [ ] Rerun the simulation on the measured quality curve (users would still be invented, so label it a sim)
-- [ ] Test whether survey-stated preferences (PRISM) give a useful starting guess for a new user, and try features other than length
+- [x] Test whether survey-stated preferences (PRISM) give a useful starting guess (E24: no) and try features other than length (E25: no stable personal differences at about 12 turns)
+- [ ] Test per-user adaptation with longer histories, on preferences about compression itself, and in other populations
 - [ ] Test the context weight on real chatty vs logistics conversations
 - [ ] Make the plan aware of each backend's useful range (a choice between "none" and "at least X")
 - [ ] Decide what to do when the guard rejects a result (retry at a gentler rate, or another backend)
 - [ ] Test the detector on more messages with labels I didn't write
 - [ ] Small human study of satisfaction with compressed contexts
-- [ ] Decide, from the above, whether to keep per-user learning or reduce FCCL to a guarded compression layer with a strong default
+- [ ] Decide, from the above, where per-user adaptation is worth keeping (longer histories, compression-specific preferences) and where a strong global default is enough
 - [ ] Add `where` (which parts of the context may be compressed) and `keep_original` (reversible compression) to the plan
 
 ## Changelog
@@ -465,3 +522,7 @@ layer = FCCL(context_fn=LayaContext(), min_keep=0.6)
 - README rewritten to match the real-data evidence; demo and usage snippet now use `min_keep=0.6`
 - Real DREAM dialogue test (E21, partial): the compression curve matches SQuAD; dense dialogues did not tolerate more compression
 - Real MultiWOZ booking-conversation test (E22): same curve as SQuAD and DREAM; filler and repetition did not make text safe to compress hard
+- Failure autopsy (E23): loss is damaged context, not deleted words; retry-on-unknown found on saved answers
+- PRISM survey test (E24) and seven-feature test (E25): no stable personal differences at about 12 turns per user; a global default wins
+- Pre-registered replication of the retry net on 200 fresh questions (E26): PASS, -1.0 point at 67% of the tokens at keep 0.6
+- `cdm.answer_with_retry`, the `"abstained"` feedback and a `min_keep` default of 0.6 added to the code; results.md gained the missing E20
