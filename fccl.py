@@ -32,7 +32,8 @@ class Feedback:
     """The user's reaction to the answer they got.
 
     kind is one of: "show_more", "too_long", "correction", "regenerate",
-    "thumbs_up", "thumbs_down", "none". These are reactions to the answer,
+    "thumbs_up", "thumbs_down", "none", or the automatic "abstained" (the model said "unknown" on the
+    compressed text; see cdm.answer_with_retry). These are reactions to the answer,
     not general mood, so a user venting doesn't count as dissatisfaction.
     """
     user_id: str
@@ -65,14 +66,18 @@ class FCCL:
     LOGISTICS = ["schedule", "deadline", "invoice", "meeting", "book", "ticket", "address", "order", "deliver"]
     # "too_long" is left out on purpose: it is about answer length, not about compression.
     NEGATIVE = {"show_more", "correction", "regenerate", "thumbs_down"}
+    # "abstained" is an AUTOMATIC signal, not a user reaction: the model said "unknown" on the compressed text
+    # (so the layer retried with the full text). The user got a good answer, but the compression was too hard.
+    # It is a milder signal than a user complaint, so it gets its own, smaller back-off.
 
     def __init__(self, min_tokens=500, explore_prob=0.1, explore_step=0.1,
                  floor=0.3, warmup=3, seed=0, use_context=True, learn=True, ctx_strength=1.0,
                  adaptive_trust=False, trust_arms=(0.0, 0.25, 0.5, 1.0), trust_eps=0.15, trust_penalty=1.0,
-                 context_fn=None, min_keep=0.1):
+                 context_fn=None, min_keep=0.6):
         self.min_keep = min_keep           # hard minimum fraction of text to keep, for EVERY plan.
-                                           # 0.1 = the old behaviour. Blind tests suggested quality drops
-                                           # noticeably below about 0.45 (three texts, so a tentative number).
+                                           # 0.6 because real tests (SQuAD, DREAM, MultiWOZ, E18-E22) show quality
+                                           # drops sharply below it and the retry-on-unknown net (E23, E26)
+                                           # stops working at 0.45. 0.1 = the old behaviour (used by the sims).
         self.context_fn = context_fn       # optional: a function text -> context weight (0 to 1),
                                            # e.g. LayaContext(). None = use the keyword rule.
         self.ctx_strength = ctx_strength   # 0 = ignore conversation type, 1 = trust the keyword rule fully
@@ -154,12 +159,14 @@ class FCCL:
         last = self.last.get(fb.user_id)
         if self.adaptive_trust and last is not None and last.apply and fb.user_id in self.last_arm:
             arm = self.last_arm[fb.user_id]
-            bad = 1.0 if fb.kind in self.NEGATIVE else 0.0
+            bad = 1.0 if (fb.kind in self.NEGATIVE or fb.kind == "abstained") else 0.0
             self.arm_n[arm] += 1
             self.arm_sum[arm] += (1.0 - last.rate) - self.trust_penalty * bad   # reward: saved text minus penalty
         tried = last is not None and last.explored
         if fb.kind in self.NEGATIVE:
             w *= 0.7 if tried else 0.85     # we caused it by experimenting: back off harder
+        elif fb.kind == "abstained":
+            w *= 0.9 if tried else 0.95     # the retry fixed the answer; this only says "compressed too hard"
         elif fb.kind == "thumbs_up":
             w *= 1.05
         elif fb.kind == "none" and tried:
