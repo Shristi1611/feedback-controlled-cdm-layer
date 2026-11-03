@@ -220,6 +220,7 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 ### Fix log
 - 2026-10-29: `extract_preserve` no longer protects sentence-initial capitalised words (commit 43e8fcc). Verified: "Where is order 4821 ... Friday" gives `['4821', 'Friday']`, "Ugh I feel so stressed ..." gives `[]`. The simulation output is unchanged. Trade-off: a name that opens a sentence is not protected.
 - SimpleCDM weakness found: only pure digits count as IDs, so "12th" and "29th" are dropped at high compression. The guard catches this.
+- 2026-11-03: `cdm.is_abstention` stripped digits, so bare-number answers counted as "unknown" and triggered needless retries and false "abstained" feedback (found by E27). Digits are now kept; regression case added to `test_cascade_wiring.py`.
 
 
 ### E15. Hard minimum keep (`min_keep`) in the simulation
@@ -442,3 +443,15 @@ Result: PASS. Cascade at 0.6: -1.0 points (95% interval [-6.0, +4.0]) at 67% of 
 Finding: retry-on-abstention replicates. It recovers most of the plain-0.6 loss. It still fails at 0.45 (26 confident wrong answers).
 Caveats: wide interval (a real loss of 4 to 5 points is not ruled out); one answerer model; needs a model that abstains; judge is an LLM.
 Decision: wired into the code on 2026-11-02: `cdm.answer_with_retry` (retry on "unknown"), the automatic `"abstained"` feedback in `fccl.py`, and the `min_keep` default raised to 0.6. Offline wiring test: `test_cascade_wiring.py` (no live model run yet).
+
+## E27 - Live end-to-end test of the wired retry net (2026-11-03)
+Script: live_cascade_test.py. Real path on 60 fresh SQuAD questions (seed 2, excluding E18 and E26 samples): FCCL.plan (min_keep 0.6, keyword context rule, one user) -> LLMLingua-2 -> cdm.answer_with_retry -> live Groq answers (gpt-oss-20b, judge gpt-oss-120b) -> automatic "abstained" feedback. Same prompt as E26. Compared with the uncompressed answer on the same questions.
+First run found a BUG in cdm.is_abstention: it stripped digits, so a bare-number answer ("1998", "42%") counted as "unknown". 17% of questions were retried (E26: about 4%), 10 false "abstained" signals pushed the satisfaction weight 1.00 -> 0.60, FCCL raised its keep to as high as 0.87, and cost reached 91% of the words (accuracy -3.3). Fixed (digits kept) and covered by a regression case in test_cascade_wiring.py; the offline fake-model test could not have found it.
+Rerun after the fix (accuracy / change vs original, lost/gained / context words used):
+- uncompressed 98.3%
+- compressed, no retry 90.0%, -8.3 (5/0), p=0.062, 66% of words
+- compressed + retry (real) 95.0%, -3.3 (2/0), p=0.500, 71% of words
+Retried 3 of 60 (5%); 1.05 requests per question; guard fell back 0 times. FCCL's keep: mean 0.67, range 0.60 to 0.82. Satisfaction weight 1.00 -> 0.86 after 3 abstentions.
+Prediction check (E26 prediction): -3.3 points (95% interval [-8.3, +0.0]) at 71% of the words: FAIL on the strict reading (limit was -3.0 at 72%). One question is worth 1.7 points at n=60, so the verdict hinges on one question.
+Finding: the wired code works end to end. Cost matches (71% vs 67% in E26; higher because FCCL plans about 0.65, and abstention feedback raised keep slightly). The retry fixed 3 of the 5 compressed-only losses; the 2 remaining are confident wrong answers, as E23 and E26 predicted. Accuracy loss is consistent with E26 within noise but is not stronger evidence: informally pooled with E26's SQuAD cascade (9 lost, 8 gained) the retry net is 11 lost, 8 gained over 160 questions (-1.9 points).
+Caveats: n=60 (wide interval); SQuAD only, one answerer model; all 60 independent questions were sent through one simulated user, so abstentions accumulate on one weight (a real user has one conversation); the per-abstention back-off (0.95, or 0.9 right after an experiment) is a number I chose and was not tuned; latency of the extra request not counted; plain keep -8.3 here vs -4.0 in E26 shows how much a 60-question sample moves.
