@@ -161,7 +161,7 @@ ABSTAIN_INSTRUCTION = "If the text does not contain the answer, reply with exact
 
 def is_abstention(answer: str) -> bool:
     """True if the model declined to answer (empty, or starts with 'unknown')."""
-    a = re.sub(r"[^a-z ]", "", (answer or "").lower()).strip()
+    a = re.sub(r"[^a-z0-9 ]", "", (answer or "").lower()).strip()      # keep digits: "1998" is an answer
     return a == "" or a.startswith("unknown")
 
 
