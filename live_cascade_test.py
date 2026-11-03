@@ -1,6 +1,6 @@
-"""Live end-to-end test of the wired retry net (E27).
+"""Live end-to-end test of the wired retry net (E27, E28).
 
-Runs the REAL code path on fresh SQuAD questions:
+Runs the REAL code path on fresh questions:
   FCCL.plan -> compressor (LLMLingua-2) -> cdm.answer_with_retry -> live Groq answers -> "abstained" feedback to FCCL
 
 Per question it measures, against the uncompressed answer to the same question:
@@ -9,12 +9,16 @@ Per question it measures, against the uncompressed answer to the same question:
 It reuses the E26 prediction: with the retry, loss of at most 3 points at 72% of the tokens or less.
 (FCCL's own plan for neutral questions is keep 0.65, so expect about 65% of the tokens plus the retries.)
 
-  python live_cascade_test.py 60            LLMLingua-2 (needs about 1-2 GB of free RAM)
-  python live_cascade_test.py 60 simple     the free local SimpleCDM instead (no model; not the E26 compressor)
+  python live_cascade_test.py squad 100              fresh SQuAD questions (the first 60 are the E27 sample)
+  python live_cascade_test.py multiwoz 100           fresh MultiWOZ booking conversations (not used in E22 or E26)
+  python live_cascade_test.py squad 100 users=10     spread the questions over 10 simulated users (default 5)
+  python live_cascade_test.py squad 100 simple       the free local SimpleCDM instead of LLMLingua-2
+  (a bare number, "python live_cascade_test.py 60", still means SQuAD)
 
+Questions are dealt to the users in turn, so each user has their own satisfaction weight and an abstention on
+one passage no longer pushes down the weight that every other question uses (E27 sent everything through one user).
 Needs GROQ_API_KEY. Resumable: every model answer is cached in live_cascade_cache.json, so rerunning replays
-finished questions for free and stops cleanly at the Groq free limit. The question sample excludes every
-question used in E18 and E26. Writes live_cascade_results.txt.
+finished questions for free and stops cleanly at the Groq free limit. Writes live_cascade_<dataset>_results.txt.
 """
 import hashlib
 import json
@@ -36,12 +40,18 @@ JUDGE_MODEL = "openai/gpt-oss-120b"
 PAUSE = 3.0
 URL = "https://api.groq.com/openai/v1/chat/completions"
 CACHE_PATH = "live_cascade_cache.json"
-OUT_PATH = "live_cascade_results.txt"
+MAX_N = 200
 
-# Same prompt as the E26 replication, so the numbers are comparable (it tells the model to say "unknown").
+# Same prompts as the E26 replication, so the numbers are comparable (they tell the model to say "unknown").
 SQUAD_SYSTEM = ("Answer the question using ONLY the passage. Reply with the shortest possible answer "
                 "(a few words), with no explanation. If the passage does not contain the answer, reply: unknown")
+MW_SYSTEM = ("You will read a conversation between a customer and a booking assistant, then answer a question about it. "
+             "Reply with only the requested value (a few words, no explanation). "
+             "If the conversation does not say, reply: unknown")
 JUDGE_SYSTEM = "You grade answers. Reply with exactly one word: YES or NO."
+PHRASES = {"area": "area", "food": "type of food", "name": "name", "pricerange": "price range",
+           "type": "type of place", "day": "day", "departure": "departure place", "destination": "destination",
+           "bookday": "booking day"}
 
 
 class RateLimited(Exception):
@@ -80,6 +90,7 @@ def chat(model, system, user, max_tokens=300):
     raise RateLimited("Too many rate-limit retries.")
 
 
+# ----------------------------------------------------------------- grading
 def normalize_squad(s):
     s = s.lower()
     s = "".join(ch for ch in s if ch not in set(string.punctuation))
@@ -87,12 +98,16 @@ def normalize_squad(s):
     return " ".join(s.split())
 
 
+def norm(s):
+    return " ".join(re.sub(r"[^a-z0-9 ]", "", str(s).lower()).split())
+
+
 def is_unknown(ans):
     na = normalize_squad(ans)
     return na == "" or na.startswith("unknown")
 
 
-def grade(question, golds, ans):
+def squad_grade(question, golds, ans):
     """Same rule as E18/E26: containment of a gold answer, else the judge model."""
     if is_unknown(ans):
         return False
@@ -103,6 +118,18 @@ def grade(question, golds, ans):
                    f"Question: {question}\nCorrect answers: {golds}\nModel answer: {ans}\n"
                    "Does the model answer give the same information as at least one correct answer?", max_tokens=100)
     return verdict.upper().startswith("YES")
+
+
+def mw_grade(answer, golds):
+    """Same rule as E22/E26: exact match on the annotated value (centre/center accepted)."""
+    a = norm(answer)
+    for g in golds:
+        g = norm(g)
+        if g and (f" {g} " in f" {a} " or (len(g) >= 5 and any(w.startswith(g) for w in a.split()))):
+            return True
+        if g == "centre" and "center" in a.split():
+            return True
+    return False
 
 
 def sign_p(lost, gained):
@@ -120,7 +147,9 @@ def boot_ci(diffs, reps=4000, seed=0):
     return means[int(0.025 * reps)], means[int(0.975 * reps)]
 
 
-def load_squad_questions(n):
+# ----------------------------------------------------------------- questions
+# Each item: dict(qid, req_text, context, preserve_extra, ask(text)->answer string, grade(answer)->bool)
+def load_squad_items(n):
     from datasets import load_dataset
     ds = load_dataset("rajpurkar/squad", split="validation")
     N = len(ds)
@@ -128,28 +157,119 @@ def load_squad_questions(n):
     pool = [i for i in range(N) if i not in used]
     used |= set(random.Random(1).sample(pool, 100))            # the E26 replication sample
     pool2 = [i for i in range(N) if i not in used]
-    out = []
-    for i in random.Random(2).sample(pool2, n):
+    first = random.Random(2).sample(pool2, 60)                 # the E27 sample, kept as the first 60
+    rest_pool = [i for i in pool2 if i not in set(first)]
+    chosen = (first + random.Random(3).sample(rest_pool, MAX_N - 60))[:n]
+    items = []
+    for i in chosen:
         it = ds[i]
-        out.append((str(i), it["question"], it["answers"]["text"], it["context"]))
-    return out
+        q, golds = it["question"], it["answers"]["text"]
+        items.append(dict(
+            qid=str(i), req_text=q, context=it["context"], preserve_extra=[],
+            ask=lambda text, q=q: chat(ANSWER_MODEL, SQUAD_SYSTEM, f"Passage:\n{text}\n\nQuestion: {q}"),
+            grade=lambda ans, q=q, golds=golds: squad_grade(q, golds, ans)))
+    return items
 
 
-def report(rows, layer, backend_name, total, stopped):
-    n = len(rows)
-    lines = [f"Live end-to-end test of the wired retry net (E27). Backend: {backend_name}. "
-             f"{n} of {total} fresh SQuAD questions finished" + (" (stopped early by the rate limit)." if stopped else ".")]
+def rows(x):
+    if isinstance(x, dict):
+        keys = list(x.keys())
+        n = len(x[keys[0]]) if keys else 0
+        return [{k: x[k][i] for k in keys} for i in range(n)]
+    return list(x or [])
+
+
+def final_state(turns, user_code):
+    state = {}
+    for t in turns:
+        if t["speaker"] != user_code:
+            continue
+        for fr in rows(t.get("frames")):
+            st = fr.get("state") or {}
+            for sv in rows(st.get("slots_values")):
+                vals = sv.get("slots_values_list")
+                if vals:
+                    state[sv["slots_values_name"]] = list(vals)
+    return state
+
+
+def mw_question(name):
+    dom, _, slot = name.partition("-")
+    return (f"For the {dom} part of the conversation, what was the {PHRASES.get(slot.replace(' ', ''), slot)} "
+            "that the customer asked for or agreed to?")
+
+
+def load_multiwoz_items(n):
+    from datasets import load_dataset
+    used_dids = set()
+    for path in ("multiwoz_llm_cache.json", "rep_multiwoz_cache.json"):    # E22 and E26 conversations
+        if os.path.exists(path):
+            used_dids |= {k.split("|")[0] for k in json.load(open(path, encoding="utf-8"))}
+    ds = load_dataset("pfb30/multi_woz_v22", name="default", revision="refs/convert/parquet", split="validation")
+    per_dialogue, texts, seen = {}, {}, set()
+    for d in ds:
+        did = d["dialogue_id"]
+        turns = rows(d["turns"])
+        if not turns or did in seen or did in used_dids:
+            continue
+        user_code = turns[0]["speaker"]
+        text = "\n".join(f"{'Customer' if t['speaker'] == user_code else 'Agent'}: {t['utterance'].strip()}" for t in turns)
+        ntext = " " + norm(" ".join(t["utterance"] for t in turns)) + " "
+        opts = []
+        for name, vals in final_state(turns, user_code).items():
+            good = [v for v in vals if norm(v) and norm(v) not in ("dontcare", "none", "yes", "no")
+                    and not re.search(r"\d", str(v))]
+            found = [v for v in good if f" {norm(v)} " in ntext]
+            if found:
+                opts.append((name, good, ntext.count(f" {norm(found[0])} ")))
+        if opts:
+            seen.add(did)
+            per_dialogue[did] = opts
+            texts[did] = text
+    rng = random.Random(2)
+    ids = sorted(per_dialogue)
+    rng.shuffle(ids)
+    need = {"1": MAX_N // 2, "2+": MAX_N // 2}
+    chosen = []
+    for did in ids:
+        opts = per_dialogue[did][:]
+        rng.shuffle(opts)
+        for name, vals, m in opts:
+            g = "1" if m == 1 else "2+"
+            if need[g] > 0:
+                need[g] -= 1
+                chosen.append((did, name, vals))
+                break
+        if not any(need.values()):
+            break
+    rng.shuffle(chosen)
+    items = []
+    for did, name, golds in chosen[:n]:
+        qtext = mw_question(name)
+        items.append(dict(
+            qid=f"{did}|{name}", req_text=qtext, context=texts[did], preserve_extra=["Customer", "Agent"],
+            ask=lambda text, qtext=qtext: chat(ANSWER_MODEL, MW_SYSTEM,
+                                               f"Conversation:\n{text}\n\nQuestion: {qtext}\nAnswer:"),
+            grade=lambda ans, golds=golds: mw_grade(ans, golds)))
+    return items
+
+
+# ----------------------------------------------------------------- report
+def report(rows_, layer, which, backend_name, n_users, total, stopped):
+    n = len(rows_)
+    lines = [f"Live end-to-end test of the wired retry net ({which}). Backend: {backend_name}; {n_users} simulated users. "
+             f"{n} of {total} fresh questions finished" + (" (stopped early by the rate limit)." if stopped else ".")]
     if n == 0:
         lines.append("No question finished.")
         return "\n".join(lines)
-    base = [int(r["base_ok"]) for r in rows]
-    plain = [int(r["first_ok"]) for r in rows]
-    final = [int(r["final_ok"]) for r in rows]
+    base = [int(r["base_ok"]) for r in rows_]
+    plain = [int(r["first_ok"]) for r in rows_]
+    final = [int(r["final_ok"]) for r in rows_]
     d_plain = [a - b for a, b in zip(plain, base)]
     d_final = [a - b for a, b in zip(final, base)]
-    cost = 100 * sum(r["cost"] for r in rows) / n
-    plain_cost = 100 * sum(r["kept"] for r in rows) / n
-    retried = sum(r["retried"] for r in rows)
+    cost = 100 * sum(r["cost"] for r in rows_) / n
+    plain_cost = 100 * sum(r["kept"] for r in rows_) / n
+    retried = sum(r["retried"] for r in rows_)
     lines += [
         "",
         f"{'':<28}{'accuracy':>10}{'change':>9}{'lost/gained':>13}{'p':>8}{'context words used':>20}",
@@ -160,13 +280,14 @@ def report(rows, layer, backend_name, total, stopped):
         f"{f'{d_final.count(-1)}/{d_final.count(1)}':>13}{sign_p(d_final.count(-1), d_final.count(1)):>8.3f}{cost:>19.0f}%",
         "",
         f"Retried {retried} of {n} questions ({100 * retried / n:.0f}%). Requests per question: {1 + retried / n:.2f} "
-        f"(uncompressed: 1.00). The guard fell back (no compression) on {sum(r['fell'] for r in rows)} questions.",
-        f"FCCL's chosen keep: mean {sum(r['rate'] for r in rows) / n:.2f}, range "
-        f"{min(r['rate'] for r in rows):.2f} to {max(r['rate'] for r in rows):.2f}; measured words kept (before any retry) "
+        f"(uncompressed: 1.00). The guard fell back (no compression) on {sum(r['fell'] for r in rows_)} questions.",
+        f"FCCL's chosen keep: mean {sum(r['rate'] for r in rows_) / n:.2f}, range "
+        f"{min(r['rate'] for r in rows_):.2f} to {max(r['rate'] for r in rows_):.2f}; measured words kept (before any retry) "
         f"{plain_cost:.0f}%.",
-        f"Abstained feedback sent: {sum(r['abstained'] for r in rows)}; the user's satisfaction weight went 1.00 -> "
-        f"{layer.sat_weight.get('u1', 1.0):.2f}.",
     ]
+    ws = sorted(layer.sat_weight.get(f"u{u}", 1.0) for u in range(n_users))
+    lines.append(f"Abstained feedback sent: {sum(r['abstained'] for r in rows_)}; the users' final satisfaction weights "
+                 f"range {ws[0]:.2f} to {ws[-1]:.2f} (median {ws[len(ws) // 2]:.2f}).")
     lo, hi = boot_ci(d_final)
     loss = 100 * sum(d_final) / n
     ok = loss >= -3.0 and cost <= 72.0
@@ -175,48 +296,60 @@ def report(rows, layer, backend_name, total, stopped):
               f"(95% interval [{lo:+.1f}, {hi:+.1f}]) at {cost:.0f}% of the context words. "
               f"Prediction was: loss of at most 3 points at 72% or less.  Result: {'PASS' if ok else 'FAIL'}"
               + ("  (small sample: wide interval)" if n < 100 else ""),
+              f"One question is worth {100 / n:.1f} points at n={n}.",
               "Not counted: latency of the extra request, and the cost of the answer tokens."]
     return "\n".join(lines)
 
 
 def main(argv):
-    if len(argv) < 2 or not argv[1].isdigit():
-        raise SystemExit("usage: python live_cascade_test.py N [simple]")
-    n = int(argv[1])
-    use_simple = len(argv) > 2 and argv[2] == "simple"
+    args = argv[1:]
+    which, n, n_users, use_simple = "squad", None, 5, False
+    for a in args:
+        if a in ("squad", "multiwoz"):
+            which = a
+        elif a.isdigit():
+            n = int(a)
+        elif a == "simple":
+            use_simple = True
+        elif a.startswith("users=") and a[6:].isdigit():
+            n_users = max(1, int(a[6:]))
+        else:
+            raise SystemExit("usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [simple]")
+    if n is None or not 1 <= n <= MAX_N:
+        raise SystemExit(f"usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [simple]   (N from 1 to {MAX_N})")
     if not os.environ.get("GROQ_API_KEY"):
         raise SystemExit("GROQ_API_KEY is not set in this terminal. Run setx, then open a NEW terminal.")
     if os.path.exists(CACHE_PATH):
         cache.update(json.load(open(CACHE_PATH, encoding="utf-8")))
-    questions = load_squad_questions(n)
-    print(f"{len(questions)} fresh SQuAD questions (none used in E18 or E26).", flush=True)
+    items = load_squad_items(n) if which == "squad" else load_multiwoz_items(n)
+    print(f"{len(items)} fresh {which} questions, dealt to {n_users} simulated users.", flush=True)
 
     layer = FCCL(min_tokens=0, seed=0)                    # defaults: min_keep 0.6, keyword context rule
     backend = SimpleCDM() if use_simple else LLMLinguaCDM()
     backend_name = "SimpleCDM" if use_simple else "LLMLingua-2"
-    rows, stopped = [], False
+    out_rows, stopped = [], False
     try:
-        for k, (qid, q, golds, context) in enumerate(questions, 1):
-            def ask(text, q=q):
-                return chat(ANSWER_MODEL, SQUAD_SYSTEM, f"Passage:\n{text}\n\nQuestion: {q}")
-
-            base_ans = ask(context)
-            plan = layer.plan(Request("u1", q, int(len(context.split()) * 1.3)))
-            res = answer_with_retry(ask, backend, context, plan, prompt=q)
-            first_ans = ask(res.cdm.text)                 # answer on the compressed text alone (cached, free)
+        for k, it in enumerate(items, 1):
+            uid = f"u{(k - 1) % n_users}"
+            base_ans = it["ask"](it["context"])
+            plan = layer.plan(Request(uid, it["req_text"], int(len(it["context"].split()) * 1.3)))
+            if it["preserve_extra"]:
+                plan.preserve = sorted(set(plan.preserve) | set(it["preserve_extra"]))
+            res = answer_with_retry(it["ask"], backend, it["context"], plan, prompt=it["req_text"])
+            first_ans = it["ask"](res.cdm.text)           # answer on the compressed text alone (cached, free)
             if res.abstained:
-                layer.feedback(Feedback("u1", "abstained"))
-            rows.append(dict(base_ok=grade(q, golds, base_ans), first_ok=grade(q, golds, first_ans),
-                             final_ok=grade(q, golds, res.answer), retried=int(res.retried), cost=res.cost,
-                             kept=res.cdm.kept_words, fell=int(res.cdm.fell_back), rate=plan.rate,
-                             abstained=int(res.abstained)))
-            print(f"  {k}/{len(questions)} questions done", flush=True)
+                layer.feedback(Feedback(uid, "abstained"))
+            out_rows.append(dict(base_ok=it["grade"](base_ans), first_ok=it["grade"](first_ans),
+                                 final_ok=it["grade"](res.answer), retried=int(res.retried), cost=res.cost,
+                                 kept=res.cdm.kept_words, fell=int(res.cdm.fell_back), rate=plan.rate,
+                                 abstained=int(res.abstained)))
+            print(f"  {k}/{len(items)} questions done", flush=True)
     except RateLimited as e:
         stopped = True
         print(f"\nSTOPPED: {e} Progress is saved; rerun the same command later to continue.")
-    text = report(rows, layer, backend_name, len(questions), stopped)
+    text = report(out_rows, layer, which, backend_name, n_users, len(items), stopped)
     print("\n" + text)
-    open(OUT_PATH, "w", encoding="utf-8").write(text + "\n")
+    open(f"live_cascade_{which}_results.txt", "w", encoding="utf-8").write(text + "\n")
 
 
 if __name__ == "__main__":
