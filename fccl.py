@@ -73,11 +73,14 @@ class FCCL:
     def __init__(self, min_tokens=500, explore_prob=0.1, explore_step=0.1,
                  floor=0.3, warmup=3, seed=0, use_context=True, learn=True, ctx_strength=1.0,
                  adaptive_trust=False, trust_arms=(0.0, 0.25, 0.5, 1.0), trust_eps=0.15, trust_penalty=1.0,
-                 context_fn=None, min_keep=0.6):
+                 context_fn=None, min_keep=0.6, compress_strength=0.7):
         self.min_keep = min_keep           # hard minimum fraction of text to keep, for EVERY plan.
                                            # 0.6 because real tests (SQuAD, DREAM, MultiWOZ, E18-E22) show quality
                                            # drops sharply below it and the retry-on-unknown net (E23, E26)
                                            # stops working at 0.45. 0.1 = the old behaviour (used by the sims).
+        self.compress_strength = compress_strength   # how hard the plan compresses: keep = 1 - strength * context * satisfaction.
+                                           # 0.7 = the original formula (a neutral message plans keep 0.65). 0.8 plans keep 0.6
+                                           # for a neutral message, which is the level the retry-on-unknown net was measured at (E26).
         self.context_fn = context_fn       # optional: a function text -> context weight (0 to 1),
                                            # e.g. LayaContext(). None = use the keyword rule.
         self.ctx_strength = ctx_strength   # 0 = ignore conversation type, 1 = trust the keyword rule fully
@@ -139,7 +142,7 @@ class FCCL:
         if self.use_context:               # shrink the context guess toward neutral (0.5)
             c = 0.5 + strength * (self.context_weight(req.text) - 0.5)
         w = self.sat_weight.get(req.user_id, 1.0)
-        keep = min(1.0, max(self.min_keep, 1.0 - 0.7 * c * w))     # never below min_keep
+        keep = min(1.0, max(self.min_keep, 1.0 - self.compress_strength * c * w))     # never below min_keep
         explored = False
         # Safe experimenting: past warm-up, user not unhappy, and stays above both floors.
         if (self.learn and n >= self.warmup and w >= 0.8
