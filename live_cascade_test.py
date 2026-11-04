@@ -13,12 +13,17 @@ It reuses the E26 prediction: with the retry, loss of at most 3 points at 72% of
   python live_cascade_test.py multiwoz 100           fresh MultiWOZ booking conversations (not used in E22 or E26)
   python live_cascade_test.py squad 100 users=10     spread the questions over 10 simulated users (default 5)
   python live_cascade_test.py squad 100 simple       the free local SimpleCDM instead of LLMLingua-2
+  python live_cascade_test.py squad 100 skip=100 strength=0.8
+        E29: take questions 101 to 200 of the fixed sample (never used before) and plan with compress_strength 0.8,
+        so a neutral question is planned at keep 0.6 instead of 0.65. PRE-REGISTERED prediction, written before any run:
+        pooled over the two fresh 100-question sets (SQuAD and MultiWOZ), the retry pipeline loses at most 3 points and
+        uses 72% of the context words or less.
   (a bare number, "python live_cascade_test.py 60", still means SQuAD)
 
 Questions are dealt to the users in turn, so each user has their own satisfaction weight and an abstention on
 one passage no longer pushes down the weight that every other question uses (E27 sent everything through one user).
 Needs GROQ_API_KEY. Resumable: every model answer is cached in live_cascade_cache.json, so rerunning replays
-finished questions for free and stops cleanly at the Groq free limit. Writes live_cascade_<dataset>_results.txt.
+finished questions for free and stops cleanly at the Groq free limit. Writes live_cascade_<dataset>_s<skip>_results.txt.
 """
 import hashlib
 import json
@@ -255,9 +260,9 @@ def load_multiwoz_items(n):
 
 
 # ----------------------------------------------------------------- report
-def report(rows_, layer, which, backend_name, n_users, total, stopped):
+def report(rows_, layer, which, backend_name, n_users, total, stopped, strength=0.7, skip=0):
     n = len(rows_)
-    lines = [f"Live end-to-end test of the wired retry net ({which}). Backend: {backend_name}; {n_users} simulated users. "
+    lines = [f"Live end-to-end test of the wired retry net ({which}, questions {skip + 1} to {skip + total}, compress_strength {strength}). Backend: {backend_name}; {n_users} simulated users. "
              f"{n} of {total} fresh questions finished" + (" (stopped early by the rate limit)." if stopped else ".")]
     if n == 0:
         lines.append("No question finished.")
@@ -303,7 +308,7 @@ def report(rows_, layer, which, backend_name, n_users, total, stopped):
 
 def main(argv):
     args = argv[1:]
-    which, n, n_users, use_simple = "squad", None, 5, False
+    which, n, n_users, use_simple, strength, skip = "squad", None, 5, False, 0.7, 0
     for a in args:
         if a in ("squad", "multiwoz"):
             which = a
@@ -313,18 +318,26 @@ def main(argv):
             use_simple = True
         elif a.startswith("users=") and a[6:].isdigit():
             n_users = max(1, int(a[6:]))
+        elif a.startswith("skip=") and a[5:].isdigit():
+            skip = int(a[5:])
+        elif a.startswith("strength="):
+            try:
+                strength = float(a[9:])
+            except ValueError:
+                raise SystemExit("strength= needs a number, for example strength=0.8")
         else:
-            raise SystemExit("usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [simple]")
-    if n is None or not 1 <= n <= MAX_N:
-        raise SystemExit(f"usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [simple]   (N from 1 to {MAX_N})")
+            raise SystemExit("usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [skip=S] [strength=X] [simple]")
+    if n is None or n < 1 or skip + n > MAX_N:
+        raise SystemExit(f"usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [skip=S] [strength=X] [simple]   (skip + N must be at most {MAX_N})")
     if not os.environ.get("GROQ_API_KEY"):
         raise SystemExit("GROQ_API_KEY is not set in this terminal. Run setx, then open a NEW terminal.")
     if os.path.exists(CACHE_PATH):
         cache.update(json.load(open(CACHE_PATH, encoding="utf-8")))
-    items = load_squad_items(n) if which == "squad" else load_multiwoz_items(n)
-    print(f"{len(items)} fresh {which} questions, dealt to {n_users} simulated users.", flush=True)
+    items = (load_squad_items(skip + n) if which == "squad" else load_multiwoz_items(skip + n))[skip:]
+    print(f"{len(items)} fresh {which} questions (numbers {skip + 1} to {skip + len(items)}), compress_strength {strength}, "
+          f"dealt to {n_users} simulated users.", flush=True)
 
-    layer = FCCL(min_tokens=0, seed=0)                    # defaults: min_keep 0.6, keyword context rule
+    layer = FCCL(min_tokens=0, seed=0, compress_strength=strength)   # defaults: min_keep 0.6, keyword context rule
     backend = SimpleCDM() if use_simple else LLMLinguaCDM()
     backend_name = "SimpleCDM" if use_simple else "LLMLingua-2"
     out_rows, stopped = [], False
@@ -347,9 +360,9 @@ def main(argv):
     except RateLimited as e:
         stopped = True
         print(f"\nSTOPPED: {e} Progress is saved; rerun the same command later to continue.")
-    text = report(out_rows, layer, which, backend_name, n_users, len(items), stopped)
+    text = report(out_rows, layer, which, backend_name, n_users, len(items), stopped, strength, skip)
     print("\n" + text)
-    open(f"live_cascade_{which}_results.txt", "w", encoding="utf-8").write(text + "\n")
+    open(f"live_cascade_{which}_s{skip}_results.txt", "w", encoding="utf-8").write(text + "\n")
 
 
 if __name__ == "__main__":
