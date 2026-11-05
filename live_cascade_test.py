@@ -23,7 +23,8 @@ It reuses the E26 prediction: with the retry, loss of at most 3 points at 72% of
 Questions are dealt to the users in turn, so each user has their own satisfaction weight and an abstention on
 one passage no longer pushes down the weight that every other question uses (E27 sent everything through one user).
 Needs GROQ_API_KEY. Resumable: every model answer is cached in live_cascade_cache.json, so rerunning replays
-finished questions for free and stops cleanly at the Groq free limit. Writes live_cascade_<dataset>_s<skip>_results.txt.
+finished questions for free and stops cleanly at the Groq free limit. Writes live_cascade_<dataset>_<answerer>_s<skip>_results.txt.
+Other answerers: add answerer=<groq model id> (python live_cascade_test.py models lists what your key can use).
 """
 import hashlib
 import json
@@ -75,10 +76,14 @@ def chat(model, system, user, max_tokens=300):
     key = hashlib.sha1(json.dumps([model, system, user, max_tokens]).encode("utf-8")).hexdigest()
     if key in cache:
         return cache[key]
+    body = {"model": model, "temperature": 0, "max_completion_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    if "gpt-oss" in model:
+        body["reasoning_effort"] = "low"                  # only reasoning models accept this field
+    elif "qwen3" in model:
+        body["reasoning_effort"] = "none"
     for _ in range(8):
-        r = requests.post(URL, headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"}, timeout=90, json={
-            "model": model, "temperature": 0, "max_completion_tokens": max_tokens, "reasoning_effort": "low",
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
+        r = requests.post(URL, headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"}, timeout=90, json=body)
         if r.status_code == 429:
             wait = float(r.headers.get("retry-after", 10))
             if wait > 180:
@@ -88,6 +93,7 @@ def chat(model, system, user, max_tokens=300):
         if r.status_code != 200:
             raise SystemExit(f"Groq error {r.status_code}: {r.text[:400]}")
         out = (r.json()["choices"][0]["message"].get("content") or "").strip()
+        out = re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
         cache[key] = out
         save_cache()
         time.sleep(PAUSE)
@@ -307,7 +313,16 @@ def report(rows_, layer, which, backend_name, n_users, total, stopped, strength=
 
 
 def main(argv):
+    global ANSWER_MODEL
     args = argv[1:]
+    if args == ["models"]:
+        if not os.environ.get("GROQ_API_KEY"):
+            raise SystemExit("GROQ_API_KEY is not set in this terminal.")
+        r = requests.get("https://api.groq.com/openai/v1/models", timeout=30,
+                         headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"})
+        for m in sorted(x["id"] for x in r.json().get("data", [])):
+            print(m)
+        return
     which, n, n_users, use_simple, strength, skip = "squad", None, 5, False, 0.7, 0
     for a in args:
         if a in ("squad", "multiwoz"):
@@ -316,6 +331,8 @@ def main(argv):
             n = int(a)
         elif a == "simple":
             use_simple = True
+        elif a.startswith("answerer="):
+            ANSWER_MODEL = a[9:]
         elif a.startswith("users=") and a[6:].isdigit():
             n_users = max(1, int(a[6:]))
         elif a.startswith("skip=") and a[5:].isdigit():
@@ -326,9 +343,9 @@ def main(argv):
             except ValueError:
                 raise SystemExit("strength= needs a number, for example strength=0.8")
         else:
-            raise SystemExit("usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [skip=S] [strength=X] [simple]")
+            raise SystemExit("usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [skip=S] [strength=X] [answerer=ID] [simple]")
     if n is None or n < 1 or skip + n > MAX_N:
-        raise SystemExit(f"usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [skip=S] [strength=X] [simple]   (skip + N must be at most {MAX_N})")
+        raise SystemExit(f"usage: python live_cascade_test.py [squad|multiwoz] N [users=K] [skip=S] [strength=X] [answerer=ID] [simple]   (skip + N must be at most {MAX_N})")
     if not os.environ.get("GROQ_API_KEY"):
         raise SystemExit("GROQ_API_KEY is not set in this terminal. Run setx, then open a NEW terminal.")
     if os.path.exists(CACHE_PATH):
@@ -339,7 +356,8 @@ def main(argv):
 
     layer = FCCL(min_tokens=0, seed=0, compress_strength=strength)   # defaults: min_keep 0.6, keyword context rule
     backend = SimpleCDM() if use_simple else LLMLinguaCDM()
-    backend_name = "SimpleCDM" if use_simple else "LLMLingua-2"
+    backend_name = ("SimpleCDM" if use_simple else "LLMLingua-2") + f", answerer {ANSWER_MODEL}"
+    slug = re.sub(r"[^a-z0-9]+", "-", ANSWER_MODEL.lower()).strip("-")
     out_rows, stopped = [], False
     try:
         for k, it in enumerate(items, 1):
@@ -362,7 +380,7 @@ def main(argv):
         print(f"\nSTOPPED: {e} Progress is saved; rerun the same command later to continue.")
     text = report(out_rows, layer, which, backend_name, n_users, len(items), stopped, strength, skip)
     print("\n" + text)
-    open(f"live_cascade_{which}_s{skip}_results.txt", "w", encoding="utf-8").write(text + "\n")
+    open(f"live_cascade_{which}_{slug}_s{skip}_results.txt", "w", encoding="utf-8").write(text + "\n")
 
 
 if __name__ == "__main__":
