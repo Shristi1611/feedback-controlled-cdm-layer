@@ -11,7 +11,7 @@ A feedback-driven layer between users and CDMs that decides when and how hard to
 | Guarded compression at a mild rate is safe | keep 0.8 shows no detectable loss on SQuAD (E18) and DREAM dialogues (E21), and at most about 3 points on MultiWOZ (E22) | supported, on the three kinds of task tested |
 | Compression below about 0.6 is cheap | keep 0.6 costs about 8 points, 0.45 about 18 to 23, on three different tasks (SQuAD, DREAM dialogues, MultiWOZ booking conversations); there is **no knee at 0.45** and filler or repetition did not change that (E17, E18, E21, E22) | rejected |
 | The guard is worth having | at nominal keep 0.45 it caught 18% of cases the naive compressor would have damaged (E18) | supported |
-| Retry on "unknown" makes keep 0.6 nearly free | 200 fresh questions, pre-registered: -1.0 point (95% interval [-6.0, +4.0]) at 67% of the tokens, against -4.5 at 60% without the retry; it fails at 0.45 (E23, E26). The wired code, run live on 200 + 200 fresh questions with five simulated users: about -1 point at about 76% of the words with the default plan (E28), and about -3 points at about 69% with a harder plan (E29); each sits at the edge of the pre-registered limits (E27 to E29) | supported as a trade-off: about 24% fewer words at about -1 point, or about 31% fewer at about -3; neither is free |
+| Retry on "unknown" makes keep 0.6 nearly free | 200 fresh questions, pre-registered: -1.0 point (95% interval [-6.0, +4.0]) at 67% of the tokens, against -4.5 at 60% without the retry; it fails at 0.45 (E23, E26). The wired code, run live on 200 + 200 fresh questions with five simulated users: about -1 point at about 76% of the words with the default plan (E28), and about -3 points at about 69% with a harder plan (E29); each sits at the edge of the pre-registered limits (E27 to E29). Two other answerer models (Qwen3.8-27B, ALLaM-7B): the retry reduced the loss in all six runs, to 1 to 3 points (E30) | supported as a trade-off: about 24% fewer words at about -1 point, or about 31% fewer at about -3; neither is free. Less effective when the model rarely says "unknown" |
 | Learning each user's preference beats a global rule | PRISM, about 1,390 users: global rule 59.2% to 60.3% vs per-user learning 55.5% to 55.9% pairwise accuracy; held after controlling for the model, and with seven response features (E19, E20, E25) | not supported at about 12 turns per user |
 | A user's survey answers predict their preference | out-of-sample correlation 0.00 to 0.09 with their own length slope, against a ceiling of about 0.46 (E24) | not supported |
 | The context weight helps | one real check by conversation type found no strong effect; the logistics plan (keep about 0.44) cost about 20 points on real booking conversations; venting-style text untested on real data (E20, E22) | not supported, not yet fairly tested |
@@ -185,7 +185,7 @@ Run it with `python replicate_cascade.py squad 100`, then `python replicate_casc
 - **Realistic summary:** about 24% fewer words at about -1 point, or about 31% fewer at about -3 points, pooled over two datasets. Neither setting is free.
 - Why the saving at 0.7 is smaller than in E26: FCCL's neutral plan is about 0.65, not 0.6; abstentions push a user's keep up (mean 0.66 on SQuAD, 0.70 on MultiWOZ); LLMLingua-2 keeps a little more than asked on MultiWOZ; and the 8% retries add 8 points.
 - **E27 (the first, single-user run) exposed a bug of mine:** `is_abstention` stripped digits, so number answers like "1998" counted as "unknown". That caused needless retries (17% instead of about 5%) and false abstention signals, which drove one user's weight down to 0.60 and FCCL's keep up to 0.87, so cost reached 91%. It is fixed and covered by a regression test; an offline test with a fake model could not have found it.
-- Caveats: one answerer model; wide intervals; the 60 E27 SQuAD questions overlap with the E28 SQuAD sample; the simulated users share one stream of independent questions; the back-off per abstention (0.95) and the plan strengths (0.7, 0.8) are numbers I chose; the latency of the extra request is not counted.
+- Caveats: one answerer model here (E30 below adds two more); wide intervals; the 60 E27 SQuAD questions overlap with the E28 SQuAD sample; the simulated users share one stream of independent questions; the back-off per abstention (0.95) and the plan strengths (0.7, 0.8) are numbers I chose; the latency of the extra request is not counted.
 
 - The first run exposed a bug of mine: `is_abstention` stripped digits, so number answers like "1998" counted as "unknown". That caused needless retries (17% instead of about 5%) and false abstention signals, which drove the user's weight down and FCCL's keep up to 0.87, so cost reached 91%. It is fixed and covered by a regression test; an offline test with a fake model could not have found it.
 - After the fix: 5% of questions were retried (1.05 requests per question), and the retry fixed 3 of the 5 compressed-only losses. The 2 remaining are confident wrong answers, which the retry cannot catch.
@@ -193,6 +193,27 @@ Run it with `python replicate_cascade.py squad 100`, then `python replicate_casc
 - Caveats: SQuAD only; one answerer model; all 60 independent questions were sent through one simulated user, so abstentions pile up on one weight; the back-off per abstention (0.95) is a number I chose; the extra request's latency is not counted.
 
 Run it with `python live_cascade_test.py squad 100` and `python live_cascade_test.py multiwoz 100` (needs `GROQ_API_KEY`; resumable; stops cleanly at the free limit, which MultiWOZ hits fast). Options: `users=10` for more simulated users, `skip=100` to take questions 101 to 200 of the fixed sample, `strength=0.8` for the harder plan, `simple` for the free `SimpleCDM` instead of LLMLingua-2.
+
+### Other answerer models (E30)
+
+The retry net so far had been measured with one answerer (`gpt-oss-20b`). E30 reran the same 100 SQuAD and 100 MultiWOZ questions as E28 (default plan, five simulated users) with two other models that the Groq key offered: Qwen3.8-27B and ALLaM-7B. The `gpt-oss-20b` rows are E28.
+
+| answerer, dataset | uncompressed | plain compression | with retry | retried |
+|---|---|---|---|---|
+| gpt-oss-20b, SQuAD | 98.0% | 91.0% (-7.0, 7/0) at 65% | 95.0% (-3.0, 3/0) at 69% | 4% |
+| gpt-oss-20b, MultiWOZ | 91.0% | 87.0% (-4.0, 9/5) at 75% | 92.0% (+1.0, 4/5) at 83% | 8% |
+| Qwen3.8-27B, SQuAD | 91.0% | 85.0% (-6.0, 8/2) at 66% | 89.0% (-2.0, 4/2) at 75% | 9% |
+| Qwen3.8-27B, MultiWOZ | 97.0% | 94.0% (-3.0, 4/1) at 73% | 95.0% (-2.0, 3/1) at 74% | 1% |
+| ALLaM-7B, SQuAD | 93.0% | 90.0% (-3.0, 5/2) at 65% | 91.0% (-2.0, 4/2) at 67% | 2% |
+| ALLaM-7B, MultiWOZ | 91.0% | 89.0% (-2.0, 5/3) at 74% | 90.0% (-1.0, 4/3) at 76% | 2% |
+| all six runs (informal) | | about -4.2 (38 lost, 13 gained) at about 70% | about -1.5 (22 lost, 13 gained) at about 74% | 4% |
+
+- **The retry helps on all three models.** It reduced the loss in all six runs and made none worse. A plain loss of 2 to 7 points became 1 to 3 points at about 67% to 83% of the words.
+- **How much it can recover depends on how often the model says "unknown".** Qwen abstained on 9% of SQuAD questions and recovered 4 of its 8 losses. ALLaM abstained on 2% and recovered 1 of 5 on each dataset; its other losses are confident wrong answers, which the net cannot see.
+- **Against the pre-registered limits:** the accuracy part (at most 3 points lost) is met in all six runs (gpt-oss SQuAD exactly at the limit). The cost part (72% of the words or less) is met in two of six and missed in four, so the script prints FAIL for those four.
+- Caveats: all three models run on the same provider's free tier with the same prompts; every interval includes zero; the three models answered the same 200 questions, so the 600 answers are not independent and no pooled p-value is given; the harder plan (0.8) was not repeated; the judge is from the same family as one answerer. Qwen's MultiWOZ run first stopped on a provider "over capacity" error and was resumed from the cache.
+
+Run it with `python live_cascade_test.py squad 100 answerer=<model id>` (and `multiwoz`). `python live_cascade_test.py models` lists the models your key can use; pick chat models only (not speech or safety models). Each model has its own free limit; the cache is keyed by model, so runs never mix.
 
 ### Does learning each user's preference help? PRISM (E19, E20, E24, E25)
 
@@ -389,7 +410,7 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 - **The real quality curves come from three datasets, with one answerer model (`gpt-oss-20b`).** SQuAD is single-fact lookup (60 questions, close to a worst case for compression); DREAM is dialogue inference (47 questions, short and dense); MultiWOZ is booking conversations with natural filler and repetition (60 questions, templated from human annotations, numeric answers excluded, strict scoring). All three give nearly the same curve. Venting-style text is untested and might tolerate more compression. The 0.6 loss is borderline significant within each dataset and clear when they are pooled informally.
 - **The hand-judged blind tests were too lenient** (one model as both answerer and judge, with ground truth). Their "0.45 knee" is rejected and should not be relied on.
 - **PRISM tests answer preferences, not input compression,** with simple learners, lexical features and about 12 turns per user. A negative result there does not rule out per-user adaptation on longer histories, on preferences about compression itself, or in other populations (all untested). Rare yes/no features have low measured stability partly because of noise.
-- **The retry net has one replication and four live checks, all on one answerer model.** The replication's 95% interval at keep 0.6 is [-6.0, +4.0]; the live runs lost about 1 point at about 76% of the words with the default plan (E28, missing the pre-registered 72%) and about 3 points at about 69% with the harder plan (E29, meeting the pooled limit exactly). It needs a model that says "unknown" and does not work at keep 0.45 or below. The simulated users share a stream of independent questions, which is not how a real user behaves.
+- **The retry net has one replication and four live checks on `gpt-oss-20b`, plus one live check each on Qwen3.8-27B and ALLaM-7B (E30).** The replication's 95% interval at keep 0.6 is [-6.0, +4.0]; the live runs lost about 1 point at about 76% of the words with the default plan (E28, missing the pre-registered 72%) and about 3 points at about 69% with the harder plan (E29, meeting the pooled limit exactly). It needs a model that says "unknown" and does not work at keep 0.45 or below. The simulated users share a stream of independent questions, which is not how a real user behaves. On the two other models it reduced the loss in all six runs, but it recovers less for a model that rarely says "unknown" (ALLaM: 2% of questions), and every interval includes zero.
 - The guard checks protected words and length, not meaning: a compressed text can keep every protected word and still lose what the user needs.
 - LLMLingua-2 is query-agnostic (it ignores what the user asked), so it can keep irrelevant content and drop relevant content. Compression that uses the user's question has not been tested yet.
 - Laya needs about 1 GB of free RAM on top of `torch`, and LLMLingua-2 about the same. Both failed with out-of-memory errors on a laptop until other apps were closed and the machine was restarted.
@@ -424,7 +445,8 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 | `inspect_multiwoz.py`, `real_multiwoz_llm_test.py` | MultiWOZ booking conversations: structure check, and the compression test with questions templated from human annotations (Groq, resumable) |
 | `autopsy_multiwoz.py`, `cascade_analysis.py` | why compressed answers fail (E23), and the retry net on saved answers (no API calls) |
 | `qaware_multiwoz_test.py` | question-aware turn selection on MultiWOZ (partial run, no benefit seen) |
-| `live_cascade_test.py` | live end-to-end run of the wired retry net on fresh SQuAD or MultiWOZ questions with several simulated users (E27, E28; Groq, resumable) |
+| `live_cascade_test.py` | live end-to-end run of the wired retry net on fresh SQuAD or MultiWOZ questions with several simulated users and a choice of answerer model (E27 to E30; Groq, resumable) |
+| `tests/` and `pytest.ini` | 71 offline tests (planner, feedback rules, compression guard, retry net, Groq helper); no key, no downloads |
 | `replicate_cascade.py` | the pre-registered replication of the retry net on fresh SQuAD and MultiWOZ questions (E26; Groq, resumable) |
 | `inspect_prism.py`, `prism_length_test.py`, `prism_control_test.py` | PRISM: structure, per-user length adaptation, model and conversation-type controls |
 | `prism_survey_test.py`, `prism_multi_test.py` | PRISM: do survey answers predict a user's length preference (E24); do users differ on seven response features (E25) |
@@ -474,6 +496,9 @@ python test_cascade_wiring.py         # offline check of answer_with_retry and t
 python live_cascade_test.py squad 100     # live run of the whole wired path; resumable
 python live_cascade_test.py multiwoz 100  # same on booking conversations (hits the free limit fast)
 python live_cascade_test.py squad 100 skip=100 strength=0.8   # fresh questions 101-200, harder plan (E29)
+python live_cascade_test.py models                          # chat models your Groq key can use
+python live_cascade_test.py squad 100 answerer=qwen/qwen3.8-27b   # same questions, another answerer (E30)
+python -m pytest -q                   # 71 offline tests (pip install pytest first)
 ```
 
 To use the real ScaleDown API, get a key from ScaleDown and keep it in an environment variable, never in a file in the repo:
@@ -519,14 +544,14 @@ if result.abstained:                                # the model said "unknown" o
 - [x] Test on dialogue context (DREAM, E21, partial): same curve as SQuAD
 - [x] Test filler-heavy booking conversations (MultiWOZ, E22): same curve as SQuAD and DREAM
 - [~] Question-aware compression: keep the parts of the context most relevant to the user's prompt (partial MultiWOZ run, 28 of 60, showed no benefit; not conclusive)
-- [ ] Test venting-style text, and use more answerer models
+- [~] Test venting-style text, and use more answerer models (more answerers done for the retry net, E30; the compression curve is still one answerer; venting-style text untested)
 - [x] Raise the default `min_keep` in `fccl.py` from 0.1 to a measured-safe value (0.6); the simulations pin 0.1
 - [x] Retry on "unknown" found (E23) and replicated on 200 fresh questions (E26); wired in as `answer_with_retry` and the `"abstained"` feedback
 - [x] Run `answer_with_retry` live end to end (E27, 60 SQuAD questions): about 29% fewer words at -3.3 points, and a bug found and fixed along the way
 - [x] Repeat the live run with 100 SQuAD and 100 MultiWOZ questions and five simulated users (E28): accuracy held, about 24% fewer words
 - [x] Lower the neutral plan from 0.65 to 0.6 (`compress_strength=0.8`) and re-test on fresh questions (E29): about 31% fewer words at about -3 points
 - [ ] Measure the latency of the extra request; try a realistic multi-turn user and more answerer models
-- [ ] Test the retry net with more answerer models (it needs a model that says "unknown")
+- [x] Test the retry net with more answerer models (E30: Qwen3.8-27B and ALLaM-7B; helps on all three, less when the model rarely says "unknown")
 - [ ] Rerun the simulation on the measured quality curve (users would still be invented, so label it a sim)
 - [x] Test whether survey-stated preferences (PRISM) give a useful starting guess (E24: no) and try features other than length (E25: no stable personal differences at about 12 turns)
 - [ ] Test per-user adaptation with longer histories, on preferences about compression itself, and in other populations
@@ -563,4 +588,5 @@ if result.abstained:                                # the model said "unknown" o
 - Live end-to-end test (E27): found and fixed a bug (bare-number answers counted as "unknown"); after the fix, -3.3 points at 71% of the words on 60 fresh questions, a narrow miss of the pre-registered limit
 - Live runs with five simulated users on 100 SQuAD and 100 MultiWOZ questions (E28): about -1 point pooled at about 76% of the words; accuracy holds, saving smaller than E26's
 - `compress_strength` option added; live runs on 200 fresh questions with strength 0.8 (E29): about -3 points at about 69% of the words, at the pre-registered limit
-- A research paper draft (IEEE format) written from this log
+- Offline pytest suite added (71 tests); `live_cascade_test.py` gained `answerer=`, a `models` command and retry on provider overload (5xx) errors
+- Live runs with two more answerer models (E30: Qwen3.8-27B, ALLaM-7B): the retry net reduced the loss in all six runs; it recovers less when the model rarely says "unknown"
