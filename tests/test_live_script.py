@@ -96,3 +96,45 @@ def test_multiwoz_grading_matches_the_value_and_accepts_center_for_centre(fake_g
     assert lct.mw_grade("it is in the centre", ["centre"])
     assert not lct.mw_grade("north", ["centre"])
     assert not lct.mw_grade("unknown", ["centre"])
+
+
+# ------------------------------------------------------------------ Groq overload (503) handling
+class StatusResponse(FakeResponse):
+    def __init__(self, status, content="Friday"):
+        super().__init__(content)
+        self.status_code = status
+        self.text = "over capacity"
+
+
+def _fake_with_statuses(monkeypatch, tmp_path, statuses):
+    calls = []
+
+    def fake_post(url, headers=None, timeout=None, json=None):
+        calls.append(json)
+        return StatusResponse(statuses[min(len(calls) - 1, len(statuses) - 1)])
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(lct.requests, "post", fake_post)
+    monkeypatch.setattr(lct.time, "sleep", lambda s: None)
+    monkeypatch.setattr(lct, "CACHE_PATH", str(tmp_path / "cache.json"))
+    monkeypatch.setattr(lct, "cache", {})
+    return calls
+
+
+def test_a_503_is_retried_and_then_succeeds(monkeypatch, tmp_path):
+    calls = _fake_with_statuses(monkeypatch, tmp_path, [503, 503, 200])
+    assert lct.chat("some-model", "sys", "user") == "Friday"
+    assert len(calls) == 3
+
+
+def test_a_persistent_503_stops_cleanly_instead_of_crashing(monkeypatch, tmp_path):
+    calls = _fake_with_statuses(monkeypatch, tmp_path, [503])
+    with pytest.raises(lct.RateLimited):
+        lct.chat("some-model", "sys", "user")
+    assert len(calls) == 8
+
+
+def test_other_errors_still_stop_with_a_message(monkeypatch, tmp_path):
+    _fake_with_statuses(monkeypatch, tmp_path, [400])
+    with pytest.raises(SystemExit):
+        lct.chat("some-model", "sys", "user")
