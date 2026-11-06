@@ -82,13 +82,16 @@ def chat(model, system, user, max_tokens=300):
         body["reasoning_effort"] = "low"                  # only reasoning models accept this field
     elif "qwen3" in model:
         body["reasoning_effort"] = "none"
-    for _ in range(8):
+    for attempt in range(8):
         r = requests.post(URL, headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"}, timeout=90, json=body)
         if r.status_code == 429:
             wait = float(r.headers.get("retry-after", 10))
             if wait > 180:
                 raise RateLimited(f"Groq asks for a {wait / 60:.0f} minute wait (probably the free daily token limit).")
             time.sleep(wait + 1)
+            continue
+        if r.status_code in (500, 502, 503, 504):         # Groq overloaded ("over capacity"): back off and retry
+            time.sleep(min(60, 5 * 2 ** attempt))
             continue
         if r.status_code != 200:
             raise SystemExit(f"Groq error {r.status_code}: {r.text[:400]}")
@@ -98,7 +101,7 @@ def chat(model, system, user, max_tokens=300):
         save_cache()
         time.sleep(PAUSE)
         return out
-    raise RateLimited("Too many rate-limit retries.")
+    raise RateLimited("Too many retries (rate limit or Groq overload).")
 
 
 # ----------------------------------------------------------------- grading
