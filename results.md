@@ -164,7 +164,7 @@ Add new entries at the bottom of "Experiments" and update the other sections as 
 - The simulations assume the requested rate is honoured exactly; ScaleDown does not do this.
 - One shared trust level for all users in adaptive trust.
 - Laya's confidence is uncalibrated and unused.
-- Real-data results come from one answerer model (gpt-oss-20b) and an LLM judge; other models, and venting-style text, are untested.
+- Compression-curve results (E17 to E22) come from one answerer model (gpt-oss-20b) and an LLM judge. The retry net was also checked live on Qwen3.8-27B and ALLaM-7B (E30). Venting-style text is untested.
 - The retry net needs a model that says "unknown"; it fails at keep 0.45 and below, and multiple-choice tasks cannot use it.
 - Per-user adaptation is untested for long histories (more than about 12 turns), compression-specific preferences, and other populations.
 
@@ -221,6 +221,7 @@ Billing is by input size (about 511 tokens per call on the long text). Calls so 
 - 2026-10-29: `extract_preserve` no longer protects sentence-initial capitalised words (commit 43e8fcc). Verified: "Where is order 4821 ... Friday" gives `['4821', 'Friday']`, "Ugh I feel so stressed ..." gives `[]`. The simulation output is unchanged. Trade-off: a name that opens a sentence is not protected.
 - SimpleCDM weakness found: only pure digits count as IDs, so "12th" and "29th" are dropped at high compression. The guard catches this.
 - 2026-11-03: `cdm.is_abstention` stripped digits, so bare-number answers counted as "unknown" and triggered needless retries and false "abstained" feedback (found by E27). Digits are now kept; regression case added to `test_cascade_wiring.py`.
+- 2026-11-06: `live_cascade_test.py` crashed on a Groq 503 ("over capacity") with Qwen3.8-27B at question 28 of MultiWOZ. It now waits and retries on 500/502/503/504 and stops cleanly (resumable) if the provider stays down. Found by E30; covered by an offline test.
 
 
 ### E15. Hard minimum keep (`min_keep`) in the simulation
@@ -473,3 +474,16 @@ Combined (informal, 200 questions): no retry about -7.5 points (23 lost, 8 gaine
 Prediction check (pooled): -3.0 points at about 69% of the words: PASS, exactly at the accuracy limit (one question is worth 0.5 points pooled). Per dataset: SQuAD -5.0 (accuracy limit exceeded); MultiWOZ -1.0 at 73% (cost limit exceeded by one point).
 Finding: planning 0.6 instead of 0.65 moved the system along the trade-off as the plain columns predicted: about 31% fewer words at about -3 points (E29) against about 24% fewer at about -1 point (E28). The retry roughly halves the plain loss at both settings (-5.5 to -1.0 and -7.5 to -3.0). Neither setting is free.
 Caveats: the E28 and E29 rows differ by amounts inside sampling noise (intervals of 12 to 14 points width per dataset; uncompressed accuracy differs between the SQuAD samples, 98% vs 96%), so this does not show that 0.6 is worse than 0.65; one answerer model; simulated users; pooled figures are informal averages; latency not counted.
+
+## E30 - Live test with two other answerer models, default plan (2026-11-06)
+Script: live_cascade_test.py with answerer=qwen/qwen3.8-27b and answerer=allam-2-7b, squad 100 and multiwoz 100 each (the same questions 1 to 100 as E28, compress_strength 0.7, five simulated users, LLMLingua-2, same prompts, same judge gpt-oss-120b). Models were chosen from what the Groq key listed (`python live_cascade_test.py models`): no Llama chat model was available; the others were speech or safety models. gpt-oss-20b rows are E28.
+Per run (accuracy / change vs uncompressed, lost/gained / context words used; "plain" = no retry):
+- Qwen3.8-27B, SQuAD: uncompressed 91.0%; plain 85.0%, -6.0 (8/2), p=0.109, 66%; with retry 89.0%, -2.0 (4/2), p=0.688, 75%. Retried 9%; weights 0.86 to 1.00. Interval [-7.0, +3.0].
+- Qwen3.8-27B, MultiWOZ: uncompressed 97.0%; plain 94.0%, -3.0 (4/1), p=0.375, 73%; with retry 95.0%, -2.0 (3/1), p=0.625, 74%. Retried 1%. Interval [-6.0, +2.0]. (The first attempt stopped at question 28 on a Groq 503 "over capacity" error; resumed from the cache after the script was changed to back off and retry on 5xx errors.)
+- ALLaM-7B, SQuAD: uncompressed 93.0%; plain 90.0%, -3.0 (5/2), p=0.453, 65%; with retry 91.0%, -2.0 (4/2), p=0.688, 67%. Retried 2%. Interval [-7.0, +3.0].
+- ALLaM-7B, MultiWOZ: uncompressed 91.0%; plain 89.0%, -2.0 (5/3), p=0.727, 74%; with retry 90.0%, -1.0 (4/3), p=1.000, 76%. Retried 2%. Interval [-6.0, +4.0].
+Per answerer, SQuAD and MultiWOZ together (informal, 200 questions each): gpt-oss-20b plain -5.5 (16 lost, 5 gained) at 70% of the words, with retry -1.0 (7/5) at 76%, retried 6%; Qwen3.8-27B plain -4.5 (12/3) at 70%, with retry -2.0 (7/3) at 75%, retried 5%; ALLaM-7B plain -2.5 (10/5) at 70%, with retry -1.5 (8/5) at 72%, retried 2%.
+All three answerers, six runs (informal): plain 38 lost, 13 gained, about -4.2 points at about 70% of the words; with retry 22 lost, 13 gained, about -1.5 points at about 74% of the words. The retry reduced the loss in all six runs and made none worse. The 600 answers are only 200 distinct questions asked of three models, so they are not independent and no pooled p-value is given.
+Prediction check (E26 prediction, per run): the accuracy part (at most 3 points lost) is met in all six runs (gpt-oss SQuAD sits exactly at -3.0); the cost part (72% of the words or less) is met in two of six (gpt-oss SQuAD 69%, ALLaM SQuAD 67%) and missed in four (gpt-oss MultiWOZ 83%, Qwen 75% and 74%, ALLaM MultiWOZ 76%). The script prints FAIL on the strict reading in those four.
+Finding: the retry net is not specific to gpt-oss-20b. On two models from other families it brought a plain loss of 2 to 6 points down to 1 to 2 points, at about 72% to 75% of the words. How much it can recover depends on how often the model abstains: Qwen said "unknown" on 9% of SQuAD questions (and recovered 4 of 8 losses), ALLaM on 2% (it recovered 1 of 5 SQuAD losses and 1 of 5 MultiWOZ losses; the rest are confident wrong answers the net cannot see). The smaller model (ALLaM) lost the least from compression in these samples, which is not what one would guess and is within noise.
+Caveats: all three answerers are served by one provider on its free tier at temperature 0 with the same prompts; no closed or large dense model; the three runs share the same 200 questions, so errors are correlated; samples of 100 give intervals about 8 to 10 points wide and every interval includes zero; the judge (gpt-oss-120b) is from the same family as one of the answerers and grades SQuAD borderline cases only (MultiWOZ is exact match); the harder plan (strength 0.8) was not run on these models; the latency of the extra request is not counted; simulated users never complain.
