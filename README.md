@@ -19,6 +19,33 @@ A feedback-driven layer between users and CDMs that decides when and how hard to
 
 Recommended settings today: keep rate **0.8** costs little or nothing. **0.6** is the lowest I would allow (`min_keep=0.6`, now the default). On its own it costs about 4 to 8 points; with the retry-on-unknown net (`answer_with_retry`) it cost about 1 point on fresh questions. Keep the guard on.
 
+## Quickstart
+
+```powershell
+git clone https://github.com/Shristi1611/feedback-controlled-cdm-layer
+cd feedback-controlled-cdm-layer
+pip install -e .                # the planner and the guard need only the standard library
+python examples/quickstart.py   # the whole loop, no API key, no download, no internet
+python -m pytest -q             # 71 offline tests (pip install pytest first)
+```
+
+The example uses a fake model and the free local compressor to show the loop: plan, compress with the guard, ask, retry with the original text if the model says "unknown", and send the automatic feedback. Optional extras: `pip install -e ".[llmlingua]"` for the real compressor (LLMLingua-2, runs on the CPU), `".[scaledown]"` for the ScaleDown API backend, `".[laya]"` for Laya context weights, `".[eval]"` for the real-data tests.
+
+The core in six lines (your `ask` function must put `ABSTAIN_INSTRUCTION` in its prompt):
+
+```python
+from fccl import FCCL, Request, Feedback
+from cdm import SimpleCDM, answer_with_retry        # LLMLinguaCDM for the real compressor
+
+layer = FCCL()
+plan = layer.plan(Request(user_id, user_message, context_tokens))
+result = answer_with_retry(ask, SimpleCDM(), context, plan, prompt=user_message)
+if result.abstained:
+    layer.feedback(Feedback(user_id, "abstained"))
+```
+
+Note: do not run Python from a folder that contains a directory named `fccl` (for example the folder above a clone called `fccl`); Python then imports that directory instead of the module.
+
 ## The idea
 
 A CDM (constrained decoding model, such as ScaleDown's Compress) shrinks context before it reaches the LLM. Compress too hard for the wrong user or the wrong conversation and answers get worse. FCCL sits in the middle, reads the user and the conversation, tells the CDM how to compress, and learns from the user's reactions.
@@ -425,6 +452,8 @@ End to end (`demo_pipeline.py`, Laya + FCCL + compressor, same 511-token context
 
 | file | what it is |
 |---|---|
+| `pyproject.toml` | makes the repo installable (`pip install -e .`); extras for the optional backends |
+| `examples/quickstart.py` | runnable example of the whole loop with a fake model; needs no key, download or internet |
 | `fccl.py` | the layer: data types (`Request`, `CompressionPlan`, `Feedback`) and the `FCCL` class |
 | `laya_context.py` | `LayaContext`: uses Laya as the conversation-type detector (pass it as `context_fn`) |
 | `cdm.py` | CDM backends (`LLMLinguaCDM`, `ScaleDownCDM`, `SimpleCDM`), `apply_plan` with the safety guard, and `answer_with_retry` (retry on "unknown") |
@@ -550,7 +579,9 @@ if result.abstained:                                # the model said "unknown" o
 - [x] Run `answer_with_retry` live end to end (E27, 60 SQuAD questions): about 29% fewer words at -3.3 points, and a bug found and fixed along the way
 - [x] Repeat the live run with 100 SQuAD and 100 MultiWOZ questions and five simulated users (E28): accuracy held, about 24% fewer words
 - [x] Lower the neutral plan from 0.65 to 0.6 (`compress_strength=0.8`) and re-test on fresh questions (E29): about 31% fewer words at about -3 points
-- [ ] Measure the latency of the extra request; try a realistic multi-turn user and more answerer models
+- [x] Make the layer installable (`pyproject.toml`) and add a runnable quickstart that needs no key or download
+- [ ] Library work still to do: license, tests run automatically on GitHub, a latency measurement of the extra request
+- [ ] Try a realistic multi-turn user, and more answerer models for the compression curve
 - [x] Test the retry net with more answerer models (E30: Qwen3.8-27B and ALLaM-7B; helps on all three, less when the model rarely says "unknown")
 - [ ] Rerun the simulation on the measured quality curve (users would still be invented, so label it a sim)
 - [x] Test whether survey-stated preferences (PRISM) give a useful starting guess (E24: no) and try features other than length (E25: no stable personal differences at about 12 turns)
@@ -590,3 +621,4 @@ if result.abstained:                                # the model said "unknown" o
 - `compress_strength` option added; live runs on 200 fresh questions with strength 0.8 (E29): about -3 points at about 69% of the words, at the pre-registered limit
 - Offline pytest suite added (71 tests); `live_cascade_test.py` gained `answerer=`, a `models` command and retry on provider overload (5xx) errors
 - Live runs with two more answerer models (E30: Qwen3.8-27B, ALLaM-7B): the retry net reduced the loss in all six runs; it recovers less when the model rarely says "unknown"
+- Packaging and quickstart: `pyproject.toml` (installable with `pip install -e .`, optional extras) and `examples/quickstart.py` (the whole loop with no key or download)
