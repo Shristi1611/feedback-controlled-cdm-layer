@@ -10,11 +10,12 @@ so read the medians, not single values.
 
   python latency_test.py squad 30              30 SQuAD questions (default)
   python latency_test.py multiwoz 30
+  python latency_test.py squad 60 skip=30      questions 31 to 90 (fresh ones, to catch more retries)
   python latency_test.py squad 30 simple       free local SimpleCDM instead of LLMLingua-2
   python latency_test.py squad 30 answerer=<groq model id>
 
 Needs GROQ_API_KEY. Not cached, so every run makes new requests (about 3 to 4 per question).
-Writes latency_<dataset>_<answerer>_results.txt.
+Writes latency_<dataset>_<answerer>_s<skip>_results.txt.
 """
 import math
 import os
@@ -58,6 +59,9 @@ def summarise(rows):
         "retry_extra_med": statistics.median(r["fccl_s"] - r["plain_s"] for r in retried) if retried else 0.0,
         "no_retry_fccl_med": statistics.median(r["fccl_s"] for r in kept) if kept else 0.0,
         "mean_extra": statistics.mean(r["fccl_s"] - r["plain_s"] for r in rows),
+        "compress_med": statistics.median(r["compress_s"] for r in rows),
+        "compress_max": max(r["compress_s"] for r in rows),
+        "first_med": statistics.median(r["first_s"] for r in rows),
     }
     return out
 
@@ -71,6 +75,8 @@ def format_report(s, which, backend_name):
     lines.append(f"{'compressed, no retry':34}{s['plain_med']:>8.2f}s{s['plain_p90']:>9.2f}s")
     lines.append(f"{'FCCL pipeline (with retry)':34}{s['fccl_med']:>8.2f}s{s['fccl_p90']:>9.2f}s   slowest {s['fccl_max']:.2f}s")
     lines.append("")
+    lines.append(f"Of the compressed path, compression took {s['compress_med']:.2f}s (median, slowest {s['compress_max']:.2f}s) "
+                 f"and the request on the compressed text {s['first_med']:.2f}s (median).")
     lines.append(f"Retried {s['retried']} of {s['n']} questions ({s['retried'] / s['n']:.0%}).")
     if s["retried"]:
         lines.append(f"A retried question took {s['retry_extra_med']:.2f}s longer than the no-retry path (median); "
@@ -148,11 +154,12 @@ def time_question(it, layer, backend, uid, timer, clock=time.perf_counter, sleep
     if res.abstained:
         layer.feedback(Feedback(uid, "abstained"))
     sleep(PAUSE)
-    return dict(base_s=base_s, plain_s=plain_s, fccl_s=fccl_s, retried=int(res.retried), calls=len(timer.calls))
+    return dict(base_s=base_s, plain_s=plain_s, fccl_s=fccl_s, retried=int(res.retried), calls=len(timer.calls),
+                compress_s=compress_s, first_s=first_call)
 
 
 def main(argv):
-    which, n, use_simple = "squad", 30, False
+    which, n, use_simple, skip = "squad", 30, False, 0
     for a in argv[1:]:
         if a in ("squad", "multiwoz"):
             which = a
@@ -160,15 +167,17 @@ def main(argv):
             n = int(a)
         elif a == "simple":
             use_simple = True
+        elif a.startswith("skip=") and a[5:].isdigit():
+            skip = int(a[5:])
         elif a.startswith("answerer="):
             lct.ANSWER_MODEL = a[9:]
         else:
-            raise SystemExit("usage: python latency_test.py [squad|multiwoz] N [answerer=ID] [simple]")
-    if n < 1 or n > lct.MAX_N:
-        raise SystemExit(f"N must be between 1 and {lct.MAX_N}")
+            raise SystemExit("usage: python latency_test.py [squad|multiwoz] N [skip=S] [answerer=ID] [simple]")
+    if n < 1 or skip + n > lct.MAX_N:
+        raise SystemExit(f"N must be at least 1 and skip + N at most {lct.MAX_N}")
     if not os.environ.get("GROQ_API_KEY"):
         raise SystemExit("GROQ_API_KEY is not set in this terminal. Run setx, then open a NEW terminal.")
-    items = lct.load_squad_items(n) if which == "squad" else lct.load_multiwoz_items(n)
+    items = (lct.load_squad_items(skip + n) if which == "squad" else lct.load_multiwoz_items(skip + n))[skip:]
     timer = Timer()
     lct.chat = make_timed_chat(timer)           # the items' ask functions look up chat() in that module
     backend = SimpleCDM() if use_simple else LLMLinguaCDM()
@@ -192,7 +201,7 @@ def main(argv):
         text += "\n(Stopped early at the Groq limit, so fewer questions than asked.)"
     print("\n" + text)
     slug = re.sub(r"[^a-z0-9]+", "-", lct.ANSWER_MODEL.lower()).strip("-")
-    open(f"latency_{which}_{slug}_results.txt", "w", encoding="utf-8").write(text + "\n")
+    open(f"latency_{which}_{slug}_s{skip}_results.txt", "w", encoding="utf-8").write(text + "\n")
 
 
 if __name__ == "__main__":

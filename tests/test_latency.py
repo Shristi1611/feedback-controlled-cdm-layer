@@ -32,8 +32,8 @@ def key(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test")
 
 
-def row(base, plain, fccl, retried):
-    return dict(base_s=base, plain_s=plain, fccl_s=fccl, retried=retried)
+def row(base, plain, fccl, retried, compress=0.1, first=0.4):
+    return dict(base_s=base, plain_s=plain, fccl_s=fccl, retried=retried, compress_s=compress, first_s=first)
 
 
 def test_percentile_nearest_rank():
@@ -49,6 +49,7 @@ def test_summarise_basic_numbers():
     assert s["fccl_max"] == pytest.approx(1.6)
     assert s["retry_extra_med"] == pytest.approx(1.0)
     assert s["mean_extra"] == pytest.approx(0.25)
+    assert s["compress_med"] == pytest.approx(0.1) and s["first_med"] == pytest.approx(0.4)
 
 
 def test_summarise_without_retries_and_empty():
@@ -61,7 +62,7 @@ def test_summarise_without_retries_and_empty():
 def test_report_mentions_the_key_numbers():
     s = lt.summarise([row(1.0, 0.5, 0.5, 0), row(1.2, 0.6, 1.6, 1)])
     text = lt.format_report(s, "squad", "SimpleCDM, answerer m")
-    assert "Retried 1 of 2" in text and "FCCL pipeline" in text and "slowest 1.60s" in text
+    assert "Retried 1 of 2" in text and "FCCL pipeline" in text and "slowest 1.60s" in text and "compression took 0.10s" in text
 
 
 def test_timed_chat_counts_only_the_successful_request():
@@ -130,6 +131,7 @@ def test_time_question_splits_the_three_paths():
     assert r["base_s"] == pytest.approx(1.0)
     assert r["plain_s"] == pytest.approx(0.4)
     assert r["fccl_s"] == pytest.approx(1.4)
+    assert r["first_s"] == pytest.approx(0.4) and r["compress_s"] == pytest.approx(0.0)
 
 
 def test_time_question_without_retry():
