@@ -15,7 +15,7 @@ llmlingua = ["llmlingua"]  # local compressor (LLMLingua-2); run on the CPU
 laya = ["laya"]            # optional: Laya-based context weights (needs roughly 1 GB free RAM)
 scaledown = ["requests"]   # the ScaleDown API backend
 eval = ["datasets", "huggingface_hub", "requests", "numpy", "matplotlib"]
-test = ["pytest"]
+test = ["pytest", "requests"]
 
 [project.urls]
 Repository = "https://github.com/Shristi1611/feedback-controlled-cdm-layer"
