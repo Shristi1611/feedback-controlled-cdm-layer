@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fccl"
+version = "0.1.0"
+description = "Feedback-Controlled CDM Layer: balances token savings against user satisfaction, with a retry net for compressed context"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []          # the planner (fccl.py) and the guard/retry net (cdm.py) use only the standard library
+
+[project.optional-dependencies]
+llmlingua = ["llmlingua"]  # local compressor (LLMLingua-2); run on the CPU
+laya = ["laya"]            # optional: Laya-based context weights (needs roughly 1 GB free RAM)
+scaledown = ["requests"]   # the ScaleDown API backend
+eval = ["datasets", "huggingface_hub", "requests", "numpy", "matplotlib"]
+test = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/Shristi1611/feedback-controlled-cdm-layer"
+
+[tool.setuptools]
+py-modules = ["fccl", "cdm"]
