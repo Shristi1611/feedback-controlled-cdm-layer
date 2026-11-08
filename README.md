@@ -1,5 +1,7 @@
 # FCCL: Feedback-Controlled CDM Layer
 
+[![tests](https://github.com/Shristi1611/feedback-controlled-cdm-layer/actions/workflows/tests.yml/badge.svg)](https://github.com/Shristi1611/feedback-controlled-cdm-layer/actions/workflows/tests.yml)
+
 A feedback-driven layer between users and CDMs that decides when and how hard to compress, without hurting answer quality.
 
 **Status:** working prototype with a measured safe range. The guarded compression pipeline works, and its quality cost has been measured on real data (real SQuAD questions, real DREAM dialogues and real MultiWOZ booking conversations, a real generative LLM, real compressors). A **retry-on-unknown net** (answer from the compressed text; if the model says "unknown", answer again from the original) replicated on 200 fresh questions: keep 0.6 with the retry lost about 1 point at about 67% of the tokens (E26). The two ideas that made the project distinctive, learning per user and weighting by conversation context, have **not** been supported by real data so far: four real-data PRISM tests (answer length, controls, survey answers, seven response features) found that a single global rule beat per-user learning at about 12 turns per user. Longer histories, compression-specific preferences and other populations are untested. The learning results in the simulation sections below use *invented* users, so they show that the mechanism works, not that it helps real people. The full experiment log is in [`results.md`](results.md).
