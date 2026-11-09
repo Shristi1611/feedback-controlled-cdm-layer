@@ -29,3 +29,5 @@ live_cascade_cache.json
 live_cascade_results.txt
 live_cascade_squad_results.txt
 live_cascade_multiwoz_results.txt
+
+*.egg-info/
