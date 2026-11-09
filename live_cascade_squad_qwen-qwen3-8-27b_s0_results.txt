@@ -1,0 +1,14 @@
+Live end-to-end test of the wired retry net (squad, questions 1 to 100, compress_strength 0.7). Backend: LLMLingua-2, answerer qwen/qwen3.8-27b; 5 simulated users. 100 of 100 fresh questions finished.
+
+                              accuracy   change  lost/gained       p  context words used
+uncompressed                     91.0%                                              100%
+compressed, no retry             85.0%     -6.0          8/2   0.109                 66%
+compressed + retry (real)        89.0%     -2.0          4/2   0.688                 75%
+
+Retried 9 of 100 questions (9%). Requests per question: 1.09 (uncompressed: 1.00). The guard fell back (no compression) on 0 questions.
+FCCL's chosen keep: mean 0.67, range 0.60 to 0.79; measured words kept (before any retry) 66%.
+Abstained feedback sent: 9; the users' final satisfaction weights range 0.86 to 1.00 (median 0.90).
+
+PREDICTION CHECK (E26 prediction, this run): with the retry, accuracy changes by -2.0 points (95% interval [-7.0, +3.0]) at 75% of the context words. Prediction was: loss of at most 3 points at 72% or less.  Result: FAIL
+One question is worth 1.0 points at n=100.
+Not counted: latency of the extra request, and the cost of the answer tokens.
