@@ -1,0 +1,11 @@
+Latency of the retry net: 30 squad questions, LLMLingua-2, answerer openai/gpt-oss-20b
+
+                                     median  90th pct
+uncompressed, one request             0.82s     0.97s
+compressed, no retry                  1.66s     2.07s
+FCCL pipeline (with retry)            1.66s     2.07s   slowest 6.55s
+
+Retried 0 of 30 questions (0%).
+Averaged over all questions the retry adds 0.00s per question (0% of the no-retry median).
+
+Caveats: free-tier latency varies with load, a retry sends the full context so it is the slow request, and the request time depends on the answerer model.
